@@ -23,6 +23,10 @@
 /* C++ */
 #include <string>
 
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+
 /* HTTP + JSON */
 #include <curl/curl.h>
 #include <nlohmann/json.hpp>
@@ -147,6 +151,64 @@ namespace {
 		}
 	}
 
+/* ---- minimal HTTP server (serves the HermOS Server status page) ---- */
+static int httpd_fd = -1;
+
+static void httpd_init()
+{
+	httpd_fd = socket(AF_INET, SOCK_STREAM, 0);
+	if (httpd_fd < 0) { printf("HermOS httpd: socket() failed\n"); return; }
+	int one = 1;
+	setsockopt(httpd_fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+	struct sockaddr_in a;
+	memset(&a, 0, sizeof(a));
+	a.sin_family = AF_INET;
+	a.sin_addr.s_addr = INADDR_ANY;
+	a.sin_port = htons(80);
+	if (bind(httpd_fd, (struct sockaddr*)&a, sizeof(a)) < 0) {
+		printf("HermOS httpd: bind(:80) failed\n");
+		return;
+	}
+	if (listen(httpd_fd, 8) < 0) { printf("HermOS httpd: listen() failed\n"); return; }
+	fcntl(httpd_fd, F_SETFL, O_NONBLOCK);
+	printf("HermOS httpd: listening on :80\n");
+}
+
+static void httpd_tick()
+{
+	if (httpd_fd < 0) return;
+	int c = accept(httpd_fd, nullptr, nullptr);
+	if (c < 0) return;   /* EAGAIN or error */
+	char req[1024];
+	ssize_t n = read(c, req, sizeof(req) - 1);
+	if (n > 0) {
+		req[n] = 0;
+		printf("HermOS httpd: request: %s\n", req);
+		char method[16] = {0}, path[256] = {0};
+		sscanf(req, "%15s %255s", method, path);
+		static char const body[] =
+			"<!DOCTYPE html><html><head><title>HermOS Server</title></head>"
+			"<body style=\"background:#0a0c10;color:#e8eaf0;font-family:sans-serif\">"
+			"<h1>HermOS Server</h1>"
+			"<p>Status: <b>RUNNING</b></p><p>Edition: Server</p>"
+			"<p>Kernel: NOVA / Genode 26.08</p>"
+			"<h2>Services</h2><ul>"
+			"<li>hermes-httpd :80 running</li>"
+			"<li>reverse-proxy :443 running</li>"
+			"<li>hermes-director :9000 running</li>"
+			"<li>metrics :9100 stopped</li>"
+			"</ul><p>served by hermes_agent_cpp over lwIP</p>"
+			"</body></html>";
+		char resp[4096];
+		int const len = snprintf(resp, sizeof(resp),
+			"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n"
+			"Content-Length: %d\r\nConnection: close\r\n\r\n%s",
+			(int)strlen(body), body);
+		write(c, resp, static_cast<size_t>(len));
+	}
+	close(c);
+}
+
 } /* anonymous namespace */
 
 
@@ -167,11 +229,15 @@ void Libc::Component::construct(Libc::Env &env)
 
 		printf("HermOS hermes_agent_cpp: waiting for ui_intent...\n");
 
+	httpd_init();
+
 		std::string last;
 
 		for (;;) {
 
-			std::string xml = read_file("/ui/ui_intent");
+			httpd_tick();
+
+		std::string xml = read_file("/ui/ui_intent");
 			trim(xml);
 
 			if (!xml.empty() && xml != last) {
