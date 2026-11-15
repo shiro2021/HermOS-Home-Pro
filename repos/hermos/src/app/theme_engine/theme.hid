@@ -1,0 +1,56 @@
+# HermOS theme — "Shiro" (colors sampled from the Futuristic Desktop Concept)
+theme
++ name: Shiro
++ colors
+  glass: 13,15,17,220
+  active: 240,183,115,255
+  inactive: 240,183,115,255
+  paused: 150,150,150,255
++ layout
+  + slot
+    id: 0
+    x: 2
+    y: 54
+    w: 31
+    h: 24
+    chamfer: 10
+  + slot
+    id: 1
+    x: 35
+    y: 54
+    w: 31
+    h: 24
+    chamfer: 10
+  + slot
+    id: 2
+    x: 68
+    y: 54
+    w: 31
+    h: 24
+    chamfer: 10
+  + slot
+    id: 3
+    x: 2
+    y: 80
+    w: 31
+    h: 20
+    chamfer: 10
+  + slot
+    id: 4
+    x: 35
+    y: 80
+    w: 31
+    h: 20
+    chamfer: 10
+  + slot
+    id: 5
+    x: 68
+    y: 80
+    w: 31
+    h: 20
+    chamfer: 10
++ sidebar
+  x: 78
+  y: 12
+  w: 20
+  h: 80
