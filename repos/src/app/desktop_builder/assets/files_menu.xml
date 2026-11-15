@@ -1,0 +1,13 @@
+<dialog>
+  <frame>
+    <vbox>
+      <label text="Files"/>
+      <button name="home"><label text="Home"/></button>
+      <button name="documents"><label text="Documents"/></button>
+      <button name="downloads"><label text="Downloads"/></button>
+      <button name="pictures"><label text="Pictures"/></button>
+      <button name="music"><label text="Music"/></button>
+      <button name="videos"><label text="Videos"/></button>
+    </vbox>
+  </frame>
+</dialog>

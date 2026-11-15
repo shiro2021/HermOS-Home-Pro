@@ -1,0 +1,24 @@
+<runtime ram="16M" caps="1000" binary="hermes-agent">
+  <config>
+    <libc stdout="/dev/log" stderr="/dev/log"/>
+    <vfs>
+      <dir name="dev">
+        <log/>
+      </dir>
+      <dir name="ui">
+        <rom name="ui_intent" label="ui_intent" binary="no"/>
+      </dir>
+      <dir name="ai">
+        <report name="ai_command" label="ai_command" buffer="4096"/>
+      </dir>
+    </vfs>
+    <arg value="hermes-agent"/>
+  </config>
+  <content>
+    <rom label="hermes-agent"/>
+    <rom label="posix.lib.so"/>
+    <rom label="libc.lib.so"/>
+    <rom label="vfs.lib.so"/>
+    <rom label="vfs_report.lib.so"/>
+  </content>
+</runtime>

@@ -1,0 +1,524 @@
+assert {[have_recipe pkg/[drivers_interactive_pkg]]} \
+	"Recipe for 'pkg/[drivers_interactive_pkg]' not available."
+
+create_boot_directory
+
+##
+## Console edition: bash + coreutils + vim in a GUI terminal.
+## Everything below that belongs to the userland is only imported when this
+## is set, so the desktop image does not carry 34 MB of unused tars.
+##
+set console_mode [expr {[cmd_arg --hermos-console no] eq "yes"}]
+
+import_from_depot [depot_user]/pkg/[drivers_interactive_pkg] \
+                  [depot_user]/src/init
+
+if {$console_mode} {
+	import_from_depot [depot_user]/src/terminal \
+	                  [depot_user]/src/vfs_ttf \
+	                  [depot_user]/raw/terminal \
+	                  [depot_user]/raw/ttf-bitstream-vera-minimal \
+	                  [depot_user]/src/bash \
+	                  [depot_user]/src/coreutils \
+	                  [depot_user]/src/vim \
+	                  [depot_user]/src/vfs \
+	                  [depot_user]/src/vfs_import \
+	                  [depot_user]/src/vfs_pipe \
+	                  [depot_user]/src/fs_rom \
+	                  [depot_user]/src/posix \
+	                  [depot_user]/src/ncurses \
+	                  [depot_user]/src/libc
+
+	#
+	# Terminal window: a real window at the top-left, not a full-screen cover.
+	#
+	set term_cfg_fd [open [run_dir]/genode/terminal.config w]
+	puts $term_cfg_fd {config
++ initial | width: 760 | height: 520
++ vfs
+  + rom VeraMono.ttf
+  + dir font
+    + dir monospace | + ttf regular | path: /VeraMono.ttf | size_px: 16
+-}
+	close $term_cfg_fd
+
+	#
+	# vimrc for the terminal's editor
+	#
+	set vimrc_fd [open [run_dir]/genode/vimrc w]
+	puts $vimrc_fd {
+set noloadplugins
+set nocompatible
+set laststatus=2
+set noswapfile
+set viminfo=}
+	close $vimrc_fd
+
+	#
+	# bash runs as the boot module "bash"; take the binary out of the depot
+	# tar. The tars stay in the boot image and are mounted by the shell's VFS.
+	#
+	exec tar -xf [run_dir]/genode/bash.tar -C [run_dir]/genode ./bin/bash
+	exec mv [run_dir]/genode/bin/bash [run_dir]/genode/bash
+	exec rm -rf [run_dir]/genode/bin
+}
+
+
+
+##
+## UEFI boot needs bender's 'serial_fallback' to mirror the kernel log to COM1.
+## Without it a headless boot (QEMU -display none) has no diagnostic channel.
+##
+if {[have_include image/iso] || [have_include image/disk]} {
+	proc boot_output { } { return "serial serial_fallback" }
+}
+
+set installer_auto_test [expr {[cmd_arg --hermos-installer-test no] eq "yes"}]
+set installer_ui_test [expr {[cmd_arg --hermos-installer-ui-test no] eq "yes"}]
+set installer_test_mode [expr {$installer_auto_test || $installer_ui_test}]
+set installer_mode [expr {$installer_ui_test || [cmd_arg --hermos-installer-mode no] eq "yes"}]
+set image_only [have_include image/disk]
+set build_only [expr {[cmd_arg --hermos-build-only no] eq "yes"}]
+set installer_payload [expr {!$image_only && [file exists "bin/hermos-system.img"]}]
+if {($installer_test_mode || $installer_mode) && !$installer_payload} {
+	error "Installer mode requires bin/hermos-system.img from a Genode image/disk build"
+}
+
+set targets { core init lib/ld lib/libc lib/libm lib/vfs lib/posix app/hermos_shell app/hermes_director app/hermes_worker test/hermes_director_client app/hermos_installer_executor server/nitpicker server/event_to_input driver/framebuffer/boot driver/ahci driver/nvme server/report_rom timer }
+if {$console_mode} { lappend targets server/terminal }
+if {$installer_mode} { lappend targets app/hermos_installer_ui }
+if {$installer_auto_test} { lappend targets test/hermos_installer_client }
+build $targets
+
+set installer_children {}
+set nested_installer_component ""
+if {$installer_payload} {
+	set nested_installer_component {+ provides | + service HermosInstall
+
++ start hermos_installer_executor | caps: 240 | ram: 32M
+  + provides | + service HermosInstall
+  + route
+    + service Block | + child ahci | label: hermos-install-target
+    + service Timer | + parent
+    + service ROM | label: hermos-system.img | + parent | label: hermos-system.img
+    + any-service | + parent
+
+}
+}
+if {$installer_mode} {
+	append nested_installer_component {
+
++ start hermos_installer_ui | caps: 240 | ram: 20M
+  + route
+    + service HermosInstall | + child hermos_installer_executor
+    + service Gui | + parent
+    + service Input | + parent
+    + service Timer | + parent
+    + any-service | + parent}
+}
+if {$installer_auto_test} {
+	append nested_installer_component {
+
++ start hermos_installer_client | caps: 120 | ram: 4M
+  + route
+    + service HermosInstall | + child hermos_installer_executor
+    + service Timer | + parent
+    + any-service | + parent}
+}
+
+set init_cfg {
+config
++ parent-provides
+  + service ROM
+  + service IRQ
+  + service IO_MEM
+  + service IO_PORT
+  + service PD
+  + service RM
+  + service CPU
+  + service LOG
+
++ default-route | + any-service | + parent
+
++ default | caps: 100 | ram: 2M
+
++ start timer
+  + provides | + service Timer
+  + route | + any-service | + parent
+
++ start nitpicker | ram: 8M
+  + provides
+    + service Gui
+    + service Capture
+    + service Event
+  + config | request_input: yes
+  | + capture
+  | + event
+  | + domain default | layer: 3 | content: client | label: no | focus: click
+  | + default-policy | domain: default
+  | + background | color: #0b111c
+  + route
+    + service Framebuffer | + child boot_fb
+    + service Timer | + child timer
+    + service Input | + child event_to_input
+    + any-service  | + parent
+
++ start boot_fb | ram: 8M
+  + provides | + service Framebuffer
+  + route
+    + service Capture | + child nitpicker
+    + service Report  | + child report_rom
+    + service Timer   | + child timer
+    + any-service     | + parent
+
++ start report_rom | ram: 2M
+  + provides
+    + service Report
+    + service ROM
+  + config | verbose: no
+    + policy | label: workers -> config | report: hermes_director -> workers
+  + route
+    + any-service | + parent
+
++ start drivers | caps: 2500 | ram: 160M | managing_system: yes
+  + binary init
+  + provides | + service Block
+  + route
+    + service ROM | label: config | + parent | label: hermos_drivers.config
+    + service Timer | + child timer
+    + service Capture | + child nitpicker
+    + service Event | + child event_to_input
+    + service Gui | + child nitpicker
+    + service Input | + child event_to_input
+    + any-service | + parent
+
++ start event_to_input | caps: 160 | ram: 4M
+  + provides
+    + service Event
+    + service Input
+  + route
+    + any-service | + parent
+
++ start hermes_director | caps: 200 | ram: 8M
+  + provides | + service Hermes
+  + route
+    + service Report | + child report_rom
+    + any-service | + parent
+
++ start workers | caps: 400 | ram: 32M
+  + binary init
+  + route
+    + service ROM | label: config | + child report_rom
+    + service Timer | + child timer
+    + service Hermes | + child hermes_director
+    + any-service | + parent
+
+INSTALLER_DESKTOP_COMPONENT
+APPS_COMPONENT
+
++ start hermes_director_client | caps: 120 | ram: 4M
+  + route
+    + service Hermes | + child hermes_director
+    + service Timer  | + child timer
+    + any-service     | + parent
+}
+append init_cfg $installer_children
+#
+# Applications: a graphical terminal backed by bash, coreutils and vim.
+#
+# The userland lives in a VFS (read-only tars + writable home/tmp), bash is
+# started as "/bin/bash" and reads its binary through fs_rom, and terminal is
+# the Gui component that turns Terminal bytes into pixels.
+#
+set apps_component {
++ start terminal | caps: 220 | ram: 16M
+  + provides | + service Terminal
+  + route
+    + service ROM | label: config | + parent | label: terminal.config
+    + service Gui | + child nitpicker
+    + service Timer | + child timer
+    + any-service | + parent
+
++ start app_cfg_fs | caps: 250 | ram: 32M
+  + provides | + service File_system
+  + binary vfs
+  + config
+    + default-policy | root: / | writeable: yes
+    + vfs
+      + ram
+      + import
+        + inline vfs
+          + config
+            + vfs
+            | + tar coreutils.tar
+            | + tar vim.tar
+            | + tar bash.tar
+            | + dir config | + fs config -> /
+            | + dir home   | + ram
+            | + dir share  | + dir vim | + rom vimrc
+            | + dir tmp    | + ram
+            | + dir pipe   | + pipe
+            | + dir dev
+            |   + zero
+            |   + null
+            |   + log
+            |   + terminal
+            |   + inline rtc | : 2026-10-25 12:00
+            |
+            + policy | label_prefix: vfs_rom | root: /
+            + default-policy | root: / | writeable: yes
+
++ start app_cfg_rom | caps: 150 | ram: 32M
+  + binary fs_rom
+  + provides | + service ROM
+  + config
+  + route
+    + service File_system | + child app_cfg_fs
+    + any-service         | + parent
+
++ start app_vfs | caps: 150 | ram: 32M
+  + binary vfs
+  + provides | + service File_system
+  + route
+    + service File_system         | + child app_cfg_fs
+    + service Terminal            | + child terminal
+    + service ROM | label: config | + child app_cfg_rom | label: vfs
+    + any-service                 | + parent
+
++ start app_rom | caps: 150 | ram: 32M
+  + binary fs_rom
+  + provides | + service ROM
+  + config
+  + route
+    + service File_system | + child app_vfs
+    + any-service         | + parent
+
++ start /bin/bash | caps: 1200 | ram: 32M
+  + config
+  | + libc | pipe: /pipe | rtc: /dev/rtc
+  |        | stdin:  /dev/terminal
+  |        | stdout: /dev/terminal
+  |        | stderr: /dev/terminal
+  | + vfs | + fs
+  | + arg bash
+  | + env TERM | : screen
+  | + env PATH | : /bin
+  + route
+    + service File_system                 | + child app_vfs
+    + service ROM | label_suffix: .lib.so | + parent
+    + service ROM | label_last: /bin/bash | + child app_rom
+    + service ROM | label_prefix: /bin    | + child app_rom
+    + any-service
+      + parent
+      + any-child
+}
+if {$installer_mode || !$console_mode} { set apps_component "" }
+
+set desktop_component {+ start hermos_shell | caps: 180 | ram: 32M
+  + route
+    + service Gui | + child nitpicker
+    + service Input | + child event_to_input
+    + service Hermes | + child hermes_director
+    + any-service     | + parent}
+if {$installer_mode} { set desktop_component "" }
+set init_cfg [string map [list INSTALLER_DESKTOP_COMPONENT $desktop_component \
+                              APPS_COMPONENT $apps_component] $init_cfg]
+append init_cfg -
+install_config $init_cfg
+
+set drivers_config_fd [open "bin/hermos_drivers.config" "WRONLY CREAT TRUNC"]
+puts $drivers_config_fd {
+config
++ parent-provides
+  + service IRQ
+  + service IO_MEM
+  + service IO_PORT
+  + service ROM
+  + service PD
+  + service RM
+  + service CPU
+  + service LOG
+  + service Timer
+  + service Event
+  + service Gui
+  + service Input
+
++ default | caps: 300 | ram: 32M
+
++ start acpi | caps: 250 | ram: 4M
+  + route
+    + service IO_MEM | + parent
+    + service LOG    | + parent
+    + service PD     | + parent
+    + service RM     | + parent
+    + service CPU    | + parent
+    + service ROM    | + parent
+    + service Report | + child report_rom
+
++ start report_rom | caps: 100 | ram: 2M
+  + provides
+  | + service ROM
+  | + service Report
+  + config
+  | + policy | label: pci_decode -> system | report: acpi -> acpi
+  | + policy | label: platform -> devices  | report: pci_decode -> devices
+  | + policy | label: usb_hid -> report    | report: usb -> devices
+  + route
+    + service LOG | + parent
+    + service PD  | + parent
+    + service CPU | + parent
+    + service ROM | + parent
+
++ start pci_decode | caps: 100 | ram: 2M
+  + route
+    + service Report              | + child report_rom
+    + service ROM | label: system | + child report_rom
+    + service IO_MEM              | + parent
+    + service LOG                 | + parent
+    + service PD                  | + parent
+    + service RM                  | + parent
+    + service CPU                 | + parent
+    + service ROM                 | + parent
+
++ start platform | caps: 200 | ram: 3M | managing_system: yes
+  + provides
+  | + service Dma
+  | + service Platform
+  + route
+  | + service ROM | label: devices | + child report_rom
+  | + service Report               | + child report_rom
+  | + service IRQ                  | + parent
+  | + service IO_MEM               | + parent
+  | + service IO_PORT              | + parent
+  | + service ROM                  | + parent
+  | + service PD                   | + parent
+  | + service CPU                  | + parent
+  | + service LOG                  | + parent
+  | + service Timer                | + parent
+  + config
+    + report | devices: yes
+    + policy | label_prefix: ps2             | + device ps2
+    + policy | label_prefix: usb | info: yes | + pci | class: USB
+    + policy | label_prefix: ahci | + pci | class: AHCI
+    + policy | label_prefix: nvme | + pci | class: NVME
+
++ start ps2 | caps: 100 | ram: 1280K
+  + config | verbose_keyboard: no | verbose_mouse: no | verbose_scancodes: no
+  + route
+    + service Dma      | + child platform
+    + service Platform | + child platform
+    + service Timer    | + parent
+    + service Event    | + child event_filter | label: ps2
+    + any-service      | + parent
+
++ start usb | caps: 200 | ram: 16M
+  + binary pc_usb_host
+  + provides | + service Usb
+  + config | bios_handoff: no
+  | + report | devices: yes
+  | + policy | label_prefix: usb_hid | + device | class: 0x3
+  + route
+    + service Report | label: devices | + child report_rom
+    + any-service
+      + parent
+      + any-child
+
++ start usb_hid | caps: 180 | ram: 10M
+  + route
+    + service ROM | label: report | + child report_rom
+    + service Event | + child event_filter | label: usb
+    + service Usb   | + child usb
+    + any-service
+      + parent
+      + any-child
+
++ start ahci | caps: 200 | ram: 12M
+  + provides | + service Block
+  + config | atapi: no
+  | + report | ports: yes
+  | INSTALLER_AHCI_POLICY
+  | INSTALLER_AHCI_READ_ONLY_POLICY
+  + route
+    + service Dma      | + child platform
+    + service Platform | + child platform
+    + service Report   | + child report_rom
+    + any-service
+      + parent
+      + any-child
+
++ start nvme | caps: 200 | ram: 24M
+  + provides | + service Block
+  + config | max_hmb_size: 16M
+    + report | namespace: yes
+    + policy | label_prefix: hermos_ | writeable: no
+  + route
+    + service Dma      | + child platform
+    + service Platform | + child platform
+    + service Report   | + child report_rom
+    + any-service
+      + parent
+      + any-child
+
++ start event_filter | caps: 150 | ram: 4M
+  + provides | + service Event
+  + route
+    + service ROM | label: config | + parent | label: event_filter.config
+    + any-service | + parent
+INSTALLER_EXECUTOR_COMPONENT
+-
+}
+close $drivers_config_fd
+
+
+set driver_config_fd [open "bin/hermos_drivers.config" "RDONLY"]
+set driver_config [read $driver_config_fd]
+close $driver_config_fd
+set installer_policy ""
+set installer_read_only_policy ""
+if {$installer_test_mode} {
+	set installer_policy "+ default-policy | device: 1 | writeable: yes"
+} else {
+	set installer_read_only_policy "+ policy | label_prefix: hermos-install-target | device: 0 | writeable: yes"
+}
+set driver_config [string map [list INSTALLER_AHCI_POLICY $installer_policy \
+	                           INSTALLER_AHCI_READ_ONLY_POLICY $installer_read_only_policy \
+	                           INSTALLER_EXECUTOR_COMPONENT $nested_installer_component] \
+	                           $driver_config]
+set driver_config_fd [open "bin/hermos_drivers.config" "WRONLY CREAT TRUNC"]
+puts -nonewline $driver_config_fd $driver_config
+close $driver_config_fd
+
+
+set boot_modules [list {*}[build_artifacts] hermos_drivers.config]
+if {$installer_payload} { lappend boot_modules hermos-system.img }
+build_boot_image $boot_modules
+
+if {$image_only || $build_only} {
+	puts "Genode image built; skipped QEMU runtime by explicit build-only mode"
+} else {
+	set target_disk [file join [run_dir] hermos-target.raw]
+	if {![file exists $target_disk]} {
+		exec truncate -s 512M $target_disk
+	}
+	append qemu_args " -device ahci,id=ahci "
+	append qemu_args " -drive id=hermos-target,file=$target_disk,format=raw,if=none -device ide-hd,drive=hermos-target,bus=ahci.0 "
+	if {$installer_test_mode} {
+		set target_fd [file tempfile installer_target]
+		close $target_fd
+		exec truncate -s 64M $installer_target
+		append qemu_args " -drive id=hermos-install-target,file=$installer_target,format=raw,if=none -device ide-hd,drive=hermos-install-target,bus=ahci.1 "
+		puts "Dedicated disposable installer-test disk: $installer_target"
+	}
+	run_genode_until {Hermes Core Director READY} 120
+	if {!$installer_test_mode} {
+		run_genode_until {Hermes intent UI connected} 120
+	}
+	run_genode_until {\[hermes_test\] PASS} 120
+	if {$installer_test_mode} {
+		run_genode_until {\[installer_test\] PASS} 120
+		set image_bytes [file size "bin/hermos-system.img"]
+		exec cmp -n $image_bytes "bin/hermos-system.img" $installer_target
+		puts "Installer payload matches the first $image_bytes target-disk bytes"
+	}
+	puts "HermOS desktop services started and Hermes integration passed"
+}

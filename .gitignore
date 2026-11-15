@@ -1,0 +1,26 @@
+# Rust / cargo build output
+target/
+**/target/
+
+# Compiled artifacts
+*.o
+*.rlib
+*.rmeta
+*.so
+*.a
+*.d
+
+# Genode build tree
+build/
+var/
+bin/
+dep/
+
+# OS images and releases
+*.iso
+*.img
+*.sha256
+
+# QEMU / test artifacts
+artifacts/
+*.serial.log
