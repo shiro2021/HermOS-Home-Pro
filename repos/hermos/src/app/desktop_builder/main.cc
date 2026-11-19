@@ -438,6 +438,40 @@ namespace Hermos {
 		Constructible<Block::Connection<>> _block { };
 		void _block_signal() { }
 		Io_signal_handler<Main> _block_sigh { _env.ep(), *this, &Main::_block_signal };
+		bool _block_connected { false };
+
+		/* Connect the Block session lazily (on installer launch). A bare ISO
+		   with no disk would hang here at boot — the base-lib maps DENIED to
+		   sleep_forever(), not a throw — so connect only when the installer is
+		   actually launched. */
+		void _connect_block()
+		{
+			if (_block_connected) return;
+			_block_connected = true;
+			log("HermOS block: connecting to Block session...");
+			try {
+				_block.construct(_env, &_block_alloc, 4 * 1024 * 1024);
+				_block->sigh(_block_sigh);
+				log("HermOS block: connected, reading info...");
+				_blk_info = _block->info();
+				uint64_t const bytes = (uint64_t)_blk_info.block_size * _blk_info.block_count;
+				unsigned const gb = (unsigned)(bytes / (1024ULL * 1024ULL * 1024ULL));
+				_disk_size = Genode::String<32>(gb, " GB");
+				size_t const bs = _blk_info.block_size;
+				uint64_t const bc = _blk_info.block_count;
+				uint64_t const gb_sectors  = (1024ull * 1024 * 1024) / bs;
+				uint64_t const efi_sectors = (200ull * 1024 * 1024) / bs;
+				uint64_t const overhead    = 67 + efi_sectors;
+				_max_gb = (bc > overhead) ? (bc - overhead) / gb_sectors : 0;
+				if (_max_gb < 1) _max_gb = 1;
+				_alloc_gb = _max_gb;
+				log("HermOS block: block_size=", bs, " block_count=", bc, " => ", _disk_size.string(),
+				    " (max alloc ", (unsigned)_max_gb, " GB)");
+			} catch (...) {
+				_disk_size = "20 GB";
+				log("HermOS block: no Block session available (fallback 20 GB)");
+			}
+		}
 
 		/* app launcher: report_rom-driven config for the nested "apps" init */
 		Reporter _apps_report { _env, "config", "apps", 4096 };
@@ -463,9 +497,12 @@ namespace Hermos {
 		bool _paused     { false };
 		bool _panel_open { true };
 	bool _installer_mode { false };   /* boot into the live desktop; installer launched on demand */
+	bool _server_mode { false };     /* boot into a minimal server status GUI */
 	int  _installer_step { 0 };
 	bool _installer_confirm { false };
 	Genode::String<32> _disk_size { "20 GB" };
+	Genode::String<48> _mykee_key { "MK-V3-9F2C-7A4B" };   /* MyKee key for the AI router */
+	unsigned _mykee_seq { 1 };
 	/* installer: block-I/O state for the ext2 format + file copy */
 	Block::Session::Info _blk_info { };
 	enum { INST_IDLE = 0, INST_FORMATTING = 1, INST_COPYING = 2, INST_VERIFYING = 3, INST_DONE = 4 };
@@ -2236,39 +2273,43 @@ namespace Hermos {
 	bool _ihit_next(int x, int y) const
 	{ return x >= _w/2 + 240 && x < _w/2 + 420 && y >= _iby() && y < _iby() + 36; }
 	bool _ihit_confirm(int x, int y) const
-	{ return x >= _w/2 - 300 && x < _w/2 - 282 && y >= 580 && y < 598; }
+	{ return x >= _w/2 - 280 && x < _w/2 - 262 && y >= 540 && y < 558; }
 	bool _ihit_minus(int x, int y) const
-	{ return x >= _w/2 - 160 && x < _w/2 - 116 && y >= 430 && y < 466; }
+	{ return x >= _w/2 - 240 && x < _w/2 - 196 && y >= 342 && y < 378; }
 	bool _ihit_plus(int x, int y) const
-	{ return x >= _w/2 + 116 && x < _w/2 + 160 && y >= 430 && y < 466; }
+	{ return x >= _w/2 + 196 && x < _w/2 + 240 && y >= 342 && y < 378; }
+	bool _ihit_mykee(int x, int y) const
+	{ return x >= _w/2 - 280 && x < _w/2 + 280 && y >= 450 && y < 498; }
+
+	void _regenerate_mykee()
+	{
+		_mykee_seq += 47;
+		Genode::String<48> k { "MK-V3-", (unsigned)_mykee_seq, "-7A4B" };
+		_mykee_key = k;
+	}
 
 	void _installer_click(int x, int y)
 	{
-		bool const back = _ihit_back(x, y), next = _ihit_next(x, y);
-		if (_installer_step == 0 || _installer_step == 7) {
-			++_installer_step; _dirty = true;   /* boot + finalizing: any click advances */
-			log("HermOS installer: step ", _installer_step); return;
-		}
-		if (_installer_step == 6) return;   /* installing: timer-driven, ignore clicks */
-		if (_installer_step == 5) {
-			if (_ihit_confirm(x, y)) { _installer_confirm = !_installer_confirm; _dirty = true; return; }
-			if (next && _installer_confirm) { _install_start(); ++_installer_step; _dirty = true;
-			                                  log("HermOS installer: install started -> step 6"); return; }
-			if (back) { --_installer_step; _dirty = true; return; }
-			return;
-		}
-		if (_installer_step == 8) {
-			if (next || back) { _installer_mode = false; _dirty = true;
-			                    log("HermOS installer: complete -> desktop"); }
-			return;
-		}
-		if (_installer_step == 3) {
+		/* V3 3-step installer: 0 = INST_SETUP, 1 = INST_ACTION, 2 = INST_COMPLETE */
+		if (_installer_step == 0) {
 			if (_ihit_minus(x, y)) { if (_alloc_gb > 1)      { --_alloc_gb; _dirty = true; } return; }
 			if (_ihit_plus(x, y))  { if (_alloc_gb < _max_gb) { ++_alloc_gb; _dirty = true; } return; }
+			if (_ihit_mykee(x, y)) { _regenerate_mykee(); _dirty = true; return; }
+			if (_ihit_confirm(x, y)) { _installer_confirm = !_installer_confirm; _dirty = true; return; }
+			if (_ihit_next(x, y) && _installer_confirm) {
+				_connect_block(); _install_start(); _installer_step = 1; _dirty = true;
+				log("HermOS installer: INST_ACTION"); return;
+			}
+			if (_ihit_back(x, y)) { _installer_mode = false; _dirty = true;
+			                        log("HermOS installer: cancelled -> desktop"); return; }
+			return;
 		}
-		if (next) { ++_installer_step; _dirty = true;
-		            log("HermOS installer: step ", _installer_step); return; }
-		if (back && _installer_step > 1) { --_installer_step; _dirty = true; return; }
+		if (_installer_step == 1) return;   /* installing: timer-driven */
+		if (_installer_step == 2) {
+			if (_ihit_next(x, y) || _ihit_back(x, y)) { _installer_mode = false; _dirty = true;
+			                                            log("HermOS installer: INST_COMPLETE -> desktop"); }
+			return;
+		}
 	}
 
 	/* ---- installer Cell geometry: 80% of the screen, centred ---- */
@@ -3255,8 +3296,8 @@ namespace Hermos {
 			for (int i = 0; i < 8 && is_gpt; ++i) is_gpt = (gpt[i] == sig[i]);
 			if (is_gpt) {
 				_install_phase = INST_DONE; _install_pct = 100;
-				_installer_step = 7;   /* Finalizing */
-				log("HermOS installer: boot image verified (GPT ok) -> Finalizing");
+				_installer_step = 2;   /* INST_COMPLETE */
+				log("HermOS installer: boot image verified (GPT ok) -> INST_COMPLETE");
 			} else {
 				_install_phase = INST_IDLE; log("HermOS installer: VERIFY FAILED");
 			}
@@ -3282,142 +3323,65 @@ namespace Hermos {
 	{
 		draw_dynamic_octagon(_ix(), _iy(), _iw(), _ih());
 
+		/* V3 3-step installer: 0 = INST_SETUP, 1 = INST_ACTION, 2 = INST_COMPLETE */
 		switch (_installer_step) {
 		case 0: {
-			_draw_icon("logo", _w / 2, 320);
-			_text(s, _icx(28.0f, "HermOS"), 400, 28.0f, _white(), "HermOS");
-			_text(s, _icx(13.0f, "A MORE HUMAN COMPUTER"), 442, 13.0f, _muted(), "A MORE HUMAN COMPUTER");
-			_text(s, _icx(12.0f, "Initializing..."), 540, 12.0f, _muted(), "Initializing...");
-			_progress(_w / 2 - 150, 566, 300, 8, 35);
-			break;
-		}
-		case 1: {
-			_text(s, _icx(26.0f, "Welcome to HermOS"), 220, 26.0f, _white(), "Welcome to HermOS");
-			_text(s, _icx(15.0f, "A More Human Computer"), 268, 15.0f, _solar(), "A More Human Computer");
-			_text(s, _icx(12.0f, "An operating system designed to work with you, absorb complexity, and give you control."),
-			      360, 12.0f, _muted(),
-			      "An operating system designed to work with you, absorb complexity, and give you control.");
-			_button(s, _w / 2 - 360, _iby(), 130, 36, "Learn More", false);
-			_button(s, _w / 2 + 240, _iby(), 160, 36, "Continue ->", true);
-			break;
-		}
-		case 2: {
-			_text(s, _icx(26.0f, "Your Computer"), 180, 26.0f, _white(), "Your Computer");
-			_text(s, _icx(13.0f, "HermOS has detected the following system information:"),
-			      226, 13.0f, _muted(), "HermOS has detected the following system information:");
-			Genode::String<64> storage { "Storage   QEMU Virtual Disk (", _disk_size.string(), ")" };
-			char const *specs[6] = { "CPU       QEMU Virtual CPU (x86_64)", "Memory    8 GB",
-			                         "Graphics  Virtio GPU (QEMU)", "Network   Virtio Network Device",
-			                         storage.string(), "Boot Mode UEFI" };
-			int sy = 300;
-			for (int i = 0; i < 6; ++i) { _text(s, _w / 2 - 230, sy, 13.0f, _white(), specs[i]); sy += 44; }
-			_installer_nav(s, true, "Continue ->", true);
-			break;
-		}
-		case 3: {
-			_text(s, _icx(26.0f, "Select Installation Target"), 180, 26.0f, _white(), "Select Installation Target");
-			_text(s, _icx(13.0f, "Choose the disk where HermOS will be installed."),
-			      226, 13.0f, _muted(), "Choose the disk where HermOS will be installed.");
-			_fill_rrect(_w / 2 - 280, 300, 560, 90, 12, 24, 34, 48);
-			_stroke_rrect(_w / 2 - 280, 300, 560, 90, 12, _accent_r, _accent_g, _accent_b);
-			_disc(_w / 2 - 250, 345, 8, 60, 200, 90);
-			Genode::String<64> disk { "QEMU Virtual Disk  ", _disk_size.string() };
-			_text(s, _w / 2 - 230, 330, 14.0f, _white(), disk.string());
-			_text(s, _w / 2 - 230, 356, 12.0f, _muted(), "Available");
+			_text(s, _icx(26.0f, "Install HermOS"), 180, 26.0f, _white(), "Install HermOS");
+			_text(s, _icx(13.0f, "Live OS — set up your computer in 3 steps."), 224, 13.0f, _muted(),
+			      "Live OS — set up your computer in 3 steps.");
 
-			/* allocation size selector */
-			_text(s, _w / 2 - 280, 408, 12.0f, _muted(), "Allocation size (HermOS data partition)");
-			_stepper_btn(s, _w / 2 - 160, 430, 44, 36, false);
+			/* disk size slider */
+			_text(s, _w / 2 - 280, 296, 12.0f, _muted(), "Disk size");
+			_fill_rrect(_w / 2 - 280, 330, 560, 60, 12, 24, 34, 48);
+			_stroke_rrect(_w / 2 - 280, 330, 560, 60, 12, _accent_r, _accent_g, _accent_b);
+			_stepper_btn(s, _w / 2 - 240, 342, 44, 36, false);
 			Genode::String<16> alloc { (unsigned)_alloc_gb, " GB" };
-			_text(s, _icx(15.0f, alloc.string()), 441, 15.0f, _white(), alloc.string());
-			_stepper_btn(s, _w / 2 + 116, 430, 44, 36, true);
+			_text(s, _icx(15.0f, alloc.string()), 352, 15.0f, _white(), alloc.string());
+			_stepper_btn(s, _w / 2 + 196, 342, 44, 36, true);
 
-			_text(s, _w / 2 - 280, 492, 11.0f, _muted(),
-			      "Only suitable installation targets are shown. Physical disks are hidden to prevent accidental changes.");
-			_installer_nav(s, true, "Continue ->", true);
-			break;
-		}
-		case 4: {
-			_text(s, _icx(26.0f, "Installation Plan"), 170, 26.0f, _white(), "Installation Plan");
-			_text(s, _icx(13.0f, "HermOS will be installed with the following configuration."),
-			      216, 13.0f, _muted(), "HermOS will be installed with the following configuration.");
-			Genode::String<64> tgt { "Target               QEMU Virtual Disk (", (unsigned)_alloc_gb, " GB)" };
-			char const *plan[6] = { tgt.string(),
-			                        "Filesystem           Genode Filesystem (FAT + partitions)",
-			                        "System Generation    HermOS 0.1 (Prototype)",
-			                        "Boot Configuration   UEFI (Genode + NOVA)",
-			                        "Initial Components   Core system, Desktop, Agents Framework",
-			                        "Recovery Generation  Enabled (rollback supported)" };
-			int py = 290;
-			for (int i = 0; i < 6; ++i) { _text(s, _w / 2 - 300, py, 12.0f, _white(), plan[i]); py += 44; }
-			_installer_nav(s, true, "Continue ->", true);
-			break;
-		}
-		case 5: {
-			_text(s, _icx(26.0f, "Review Installation"), 170, 26.0f, _white(), "Review Installation");
-			_text(s, _icx(13.0f, "Please review the actions that will be performed."),
-			      216, 13.0f, _muted(), "Please review the actions that will be performed.");
-			char const *acts[5] = { "1.  Partition the selected disk", "2.  Create the filesystems",
-			                        "3.  Install the core system", "4.  Configure the UEFI bootloader",
-			                        "5.  Install the desktop + agents" };
-			int ay = 290;
-			for (int i = 0; i < 5; ++i) { _text(s, _w / 2 - 280, ay, 13.0f, _white(), acts[i]); ay += 40; }
-			_fill_rrect(_w / 2 - 300, ay + 10, 600, 64, 10, 52, 20, 20);
-			_stroke_rrect(_w / 2 - 300, ay + 10, 600, 64, 10, 214, 74, 74);
-			_text(s, _w / 2 - 280, ay + 24, 12.0f, _white(),
-			      "This will format the selected disk and erase all existing data. This cannot be undone.");
-			/* the confirm gate (mirrors Windows' "I accept the license terms") */
-			_fill_rrect(_w / 2 - 300, 580, 18, 18, 4, 40, 48, 60);
-			_stroke_rrect(_w / 2 - 300, 580, 18, 18, 4, _accent_r, _accent_g, _accent_b);
-			if (_installer_confirm) _glyph_check(_w / 2 - 291, 589);
-			_text(s, _w / 2 - 274, 582, 12.0f, _white(),
-			      "I understand this will erase all data on the disk");
+			/* MyKee key */
+			_text(s, _w / 2 - 280, 416, 12.0f, _muted(), "MyKee Key (AI router)");
+			_fill_rrect(_w / 2 - 280, 450, 560, 48, 12, 24, 34, 48);
+			_stroke_rrect(_w / 2 - 280, 450, 560, 48, 12, _accent_r, _accent_g, _accent_b);
+			_text(s, _w / 2 - 260, 464, 14.0f, _solar(), _mykee_key.string());
+
+			/* confirmation checkbox */
+			_fill_rrect(_w / 2 - 280, 540, 18, 18, 4, 40, 48, 60);
+			_stroke_rrect(_w / 2 - 280, 540, 18, 18, 4, _accent_r, _accent_g, _accent_b);
+			if (_installer_confirm) _glyph_check(_w / 2 - 271, 549);
+			_text(s, _w / 2 - 254, 542, 12.0f, _white(),
+			      "I understand this will format the disk and erase all data");
+
 			_installer_nav(s, true, "Install HermOS", _installer_confirm);
 			break;
 		}
-		case 6: {
+		case 1: {
 			_text(s, _icx(26.0f, "Installing HermOS"), 180, 26.0f, _white(), "Installing HermOS");
-			_text(s, _icx(13.0f, "Please wait while HermOS is being installed."),
-			      226, 13.0f, _muted(), "Please wait while HermOS is being installed.");
-			char const *steps[5] = { "Preparing disk...", "Creating partitions...", "Formatting filesystems...",
-			                         "Installing core system...", "Installing desktop + agents..." };
-			int const done = _install_phase >= INST_DONE ? 5
-			               : _install_phase >= INST_VERIFYING ? 4
-			               : _install_phase >= INST_COPYING ? 3
-			               : _install_phase >= INST_FORMATTING ? 1 : 0;
+			_text(s, _icx(13.0f, "Formatting the disk and writing the system."), 226, 13.0f, _muted(),
+			      "Formatting the disk and writing the system.");
+			char const *steps[4] = { "Writing partition table...", "Formatting filesystems...",
+			                         "Installing core system...", "Verifying installation..." };
+			int const done = _install_phase >= INST_DONE ? 4
+			               : _install_phase >= INST_VERIFYING ? 3
+			               : _install_phase >= INST_COPYING ? 2 : 0;
 			int iy = 300;
-			for (int i = 0; i < 5; ++i) {
+			for (int i = 0; i < 4; ++i) {
 				bool const chk = i < done;
 				_disc(_w / 2 - 250, iy + 6, 6, chk ? 60 : 52, chk ? 200 : 70, chk ? 90 : 90);
 				if (chk) _glyph_check(_w / 2 - 250, iy + 6);
 				_text(s, _w / 2 - 230, iy, 13.0f, chk ? _white() : _muted(), steps[i]);
-				iy += 46;
+				iy += 52;
 			}
 			_progress(_w / 2 - 150, 560, 300, 10, (int)_install_pct);
 			Genode::String<8> pct { (int)_install_pct, "%" };
 			_text(s, _w / 2 - 150, 582, 12.0f, _muted(), pct.string());
 			break;
 		}
-		case 7: {
-			_text(s, _icx(26.0f, "Finalizing Installation"), 180, 26.0f, _white(), "Finalizing Installation");
-			_text(s, _icx(13.0f, "Completing installation and verifying system integrity."),
-			      226, 13.0f, _muted(), "Completing installation and verifying system integrity.");
-			char const *fin[3] = { "System files installed", "Boot configuration complete", "Verifying installation..." };
-			int fy = 300;
-			for (int i = 0; i < 3; ++i) {
-				_disc(_w / 2 - 250, fy + 6, 6, i < 2 ? 60 : 52, i < 2 ? 200 : 70, i < 2 ? 90 : 90);
-				if (i < 2) _glyph_check(_w / 2 - 250, fy + 6);
-				_text(s, _w / 2 - 230, fy, 13.0f, i < 2 ? _white() : _muted(), fin[i]);
-				fy += 46;
-			}
-			_progress(_w / 2 - 150, 500, 300, 10, 78);
-			_text(s, _w / 2 - 150, 522, 12.0f, _muted(), "78%");
-			break;
-		}
-		case 8: {
+		case 2: {
 			_draw_icon("logo", _w / 2, 320);
 			_text(s, _icx(26.0f, "HermOS installation complete"), 400, 26.0f, _white(), "HermOS installation complete");
-			_text(s, _icx(14.0f, "Your computer is now ready."), 444, 14.0f, _muted(), "Your computer is now ready.");
+			_text(s, _icx(14.0f, "Your computer is now ready. Reboot to start HermOS."), 444, 14.0f, _muted(),
+			      "Your computer is now ready. Reboot to start HermOS.");
 			_button(s, _w / 2 - 360, _iby(), 150, 36, "Explore HermOS", false);
 			_button(s, _w / 2 + 240, _iby(), 150, 36, "Reboot Now", true);
 			break;
@@ -3425,11 +3389,67 @@ namespace Hermos {
 		}
 	}
 
+	void _render_server(Surface<Pixel> &s)
+	{
+		/* dark server backdrop */
+		for (int y = 0; y < _h; ++y)
+			for (int x = 0; x < _w; ++x)
+				_set(x, y, 8, 10, 14);
+
+		/* header band */
+		_glass(0, 0, _w, 72, 10, 12, 18, 240);
+		_h_line(0, 72, _w, _accent_r, _accent_g, _accent_b);
+		_draw_emblem(40, 36, 40);
+		_text(s, 92, 24, 16.0f, _white(), "HermOS Server");
+
+		/* version chip (top-right) */
+		_fill_rrect(_w - 190, 20, 170, 34, 9, 22, 32, 46);
+		_stroke_rrect(_w - 190, 20, 170, 34, 9, _accent_r, _accent_g, _accent_b);
+		_text(s, _w - 176, 28, 13.0f, _white(), "HermOS V0.24");
+
+		/* system status panel */
+		int const px = 60, py = 110, pw = _w - 120;
+		_fill_rrect_glass(px, py, pw, 150, 12, 13, 18, 30, 205);
+		_stroke_rrect(px, py, pw, 150, 12, _inactive_r, _inactive_g, _inactive_b);
+		_text(s, px + 24, py + 22, 15.0f, _white(), "SYSTEM STATUS");
+		_text(s, px + 24, py + 54, 14.0f, _white(), "Status:    RUNNING");
+		_text(s, px + 24, py + 78, 14.0f, _white(), "Edition:   Server");
+		_text(s, px + 24, py + 102, 14.0f, _white(), "Kernel:    NOVA / Genode 26.08");
+		_text(s, px + 24, py + 126, 14.0f, _white(), "Director:  Hermes agent (active)");
+
+		/* services panel */
+		int const sy = py + 150 + 20;
+		_fill_rrect_glass(px, sy, pw, 260, 12, 13, 18, 30, 205);
+		_stroke_rrect(px, sy, pw, 260, 12, _inactive_r, _inactive_g, _inactive_b);
+		_text(s, px + 24, sy + 24, 15.0f, _white(), "SERVICES");
+
+		struct Svc { char const *name; char const *port; char const *state; bool up; };
+		Svc svcs[4] = {
+			{ "hermes-httpd",    ":80",   "running",  true  },
+			{ "reverse-proxy",   ":443",  "running",  true  },
+			{ "hermes-director", ":9000", "running",  true  },
+			{ "metrics",         ":9100", "stopped",  false },
+		};
+		for (int i = 0; i < 4; ++i) {
+			int const ry = sy + 60 + i * 46;
+			_disc(px + 28, ry + 10, 7, svcs[i].up ? 80 : 70, svcs[i].up ? 200 : 80, svcs[i].up ? 100 : 85);
+			_text(s, px + 48, ry, 14.0f, _white(), svcs[i].name);
+			_text(s, px + pw - 110, ry, 14.0f, _muted(), svcs[i].port);
+			_text(s, px + pw - 300, ry, 13.0f, svcs[i].up ? _white() : _muted(), svcs[i].state);
+		}
+
+		/* footer */
+		_glass(12, _h - 40, _w - 24, 28, 19, 29, 42, 230);
+		_text(s, 24, _h - 32, 12.0f, _muted(), "HermOS Server — minimal GUI");
+	}
+
 	void _render()
 		{
 			_blit_wallpaper();
 
 			Surface<Pixel> surface(_px, Area(unsigned(_w), unsigned(_h)));
+
+			if (_server_mode) { _render_server(surface); return; }
 
 			/* ---- left dock: always drawn (behind the installer Cell) ---- */
 			{
@@ -4164,30 +4184,13 @@ namespace Hermos {
 			});
 			log("HermOS screen_state published: ", _w, "x", _h);
 
-			/* installer detection: read the target disk geometry from the Block session */
-			log("HermOS block: connecting to Block session...");
-			try {
-				_block.construct(_env, &_block_alloc, 4 * 1024 * 1024);
-				_block->sigh(_block_sigh);
-				log("HermOS block: connected, reading info...");
-				_blk_info = _block->info();
-				uint64_t const bytes = (uint64_t)_blk_info.block_size * _blk_info.block_count;
-				unsigned const gb = (unsigned)(bytes / (1024ULL * 1024ULL * 1024ULL));
-				_disk_size = Genode::String<32>(gb, " GB");
-				size_t const bs = _blk_info.block_size;
-				uint64_t const bc = _blk_info.block_count;
-				uint64_t const gb_sectors  = (1024ull * 1024 * 1024) / bs;
-				uint64_t const efi_sectors = (200ull * 1024 * 1024) / bs;
-				uint64_t const overhead    = 67 + efi_sectors;   /* primary GPT + EFI + backup GPT */
-				_max_gb = (bc > overhead) ? (bc - overhead) / gb_sectors : 0;
-				if (_max_gb < 1) _max_gb = 1;
-				_alloc_gb = _max_gb;   /* default to the full disk */
-				log("HermOS block: block_size=", bs, " block_count=", bc, " => ", _disk_size.string(),
-				    " (max alloc ", (unsigned)_max_gb, " GB)");
-			} catch (...) {
-				_disk_size = "20 GB";
-				log("HermOS block: no Block session available (fallback 20 GB)");
-			}
+			/* installer detection: the Block session is connected LAZILY on
+			   installer launch (_connect_block) — a bare ISO with no disk would
+			   hang the desktop here at boot (base-lib DENIED -> sleep_forever). */
+			log("HermOS block: deferred (connect on installer launch)");
+
+			_server_mode = _config.node().attribute_value("server", false);
+			log("HermOS server mode: ", _server_mode ? "YES" : "NO");
 
 			/* apply the <vfs> config from our config ROM (mount /assets etc.) */
 			_config.node().with_optional_sub_node("vfs", [&] (Node const &vfs) {
