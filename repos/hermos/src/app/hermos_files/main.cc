@@ -773,9 +773,10 @@ void Main::_handle_input()
 				}
 				_menu_open = -1; _render(); return;
 			}
-			/* left sidebar (Quick Access) */
-			if (_in(_mx, _my, 0, menu_h(), side_w(), 3 * 30)) {
-				int const idx = (_my - menu_h()) / 30;
+			/* left sidebar (Quick Access) — items are drawn at menu_h()+26+i*30,
+			 * so offset the hit-test to match (was off by the 26px label band) */
+			if (_in(_mx, _my, 0, menu_h() + 26, side_w(), 3 * 30)) {
+				int const idx = (_my - menu_h() - 26) / 30;
 				static char const *q[3] = { "/Home", "/Home/Documents", "/Home/Downloads" };
 				_files.scan_directory(q[idx]); _selected = nullptr; _render(); return;
 			}
