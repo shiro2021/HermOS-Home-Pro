@@ -4494,6 +4494,17 @@ namespace Hermos {
 				ev.handle_absolute_motion([&] (int x, int y) {
 					_pointer_x = x * (_w - 1) / 32767;
 					_pointer_y = y * (_h - 1) / 32767;
+					/* hover-focus the Cell under the pointer so the hosted app
+					 * receives the motion and the press lands at the right
+					 * coordinates (otherwise _forward_input drops the motion,
+					 * leaving the app's pointer stale at 0,0). */
+					for (int oi = NUM_CELLS - 1; oi >= 0; --oi) {
+						int const i = _draw_order[oi];
+						if (_win_open[i] && _in_cell(i, _pointer_x, _pointer_y)) {
+							_gui_root.cells().focus(i);
+							break;
+						}
+					}
 					_dirty = true;
 				});
 
