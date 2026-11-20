@@ -61,9 +61,17 @@ static inline void button(Loc &l, float x0, float y0, float x1, float y1, char c
 	}
 }
 
+/* draw a value, shrinking the type a little so it fits the column */
+static inline void fit_text(Loc &l, Font &f, float cx, float cy, float size, float max_crop_w, Rgba col, char const *t)
+{
+	float sz = size;
+	while (sz > size * 0.62f && l.tw(f, sz, t) / l.wg.s * 1.9f > max_crop_w) sz -= 0.5f;
+	l.text(f, cx, cy, sz, col, t);
+}
+
 /* ------------------------------------------------------------------ 0: Welcome */
 
-static inline void win_welcome(Loc &l)
+static inline void win_welcome(Loc &l, State const &st)
 {
 	Fonts &f = l.g.f; Canvas &c = l.g.c;
 
@@ -104,36 +112,45 @@ static inline void win_welcome(Loc &l)
 		l.text(f.med, 535, 98, 27, Pal::white, "Welcome to HermOS");
 		l.text(f.reg, 535, 139, 18, Rgba { 214, 218, 224, 0.96f }, "A More Human Computer");
 		l.ln(535, 186, 955, 186, 1.0f, Rgba { 120, 116, 110, 0.55f });
-		static char const *const steps[5] = { "Detect your computer", "Choose installation target", "Review installation plan", "Install HermOS", "Complete" };
-		static float const ys[5] = { 216, 258, 298, 340, 381 };
-		l.ln(547, 228, 547, 372, 1.0f, Rgba { 110, 104, 98, 0.6f });
 		Ctx s = l.sub();
-		for (int i = 0; i < 5; ++i) {
-			bool const act = i == 0;
-			l.rr(535, ys[i] - 12, 24, 24, 7, act ? Rgba { 60, 38, 22, 1.0f } : Rgba { 42, 42, 44, 1.0f },
-			     act ? Rgba { 255, 150, 60, 1.0f } : Rgba { 98, 96, 94, 0.9f }, 1.2f);
-			Icon::small_square(s, l.X(547), l.Y(ys[i]), l.wg.s * 0.42f, act ? Pal::peach : Rgba { 200, 200, 204, 0.8f }, i % 2 == 0);
-			l.text(act ? f.med : f.reg, 580, ys[i] - 10, 16.5f, act ? Pal::peach : Rgba { 232, 234, 238, 0.96f }, steps[i]);
+		if (st.payload_ok) {
+			static char const *const steps[4] = { "Choose the target disk", "Pick the data partition size", "Install and verify", "Reboot into HermOS" };
+			static float const ys[4] = { 216, 262, 308, 354 };
+			l.ln(547, 228, 547, 342, 1.0f, Rgba { 110, 104, 98, 0.6f });
+			for (int i = 0; i < 4; ++i) {
+				bool const act = i == 0;
+				l.rr(535, ys[i] - 12, 24, 24, 7, act ? Rgba { 60, 38, 22, 1.0f } : Rgba { 42, 42, 44, 1.0f },
+				     act ? Rgba { 255, 150, 60, 1.0f } : Rgba { 98, 96, 94, 0.9f }, 1.2f);
+				Icon::small_square(s, l.X(547), l.Y(ys[i]), l.wg.s * 0.42f, act ? Pal::peach : Rgba { 200, 200, 204, 0.8f }, i % 2 == 0);
+				l.text(act ? f.med : f.reg, 580, ys[i] - 10, 16.5f, act ? Pal::peach : Rgba { 232, 234, 238, 0.96f }, steps[i]);
+			}
+			Poly b; b.n = 0;
+			float const bx0 = 673, bx1 = 878, by0 = 405, by1 = 447, tip = 16;
+			b.add(l.X(bx0), l.Y((by0 + by1) / 2)); b.add(l.X(bx0 + tip), l.Y(by0)); b.add(l.X(bx1 - tip), l.Y(by0));
+			b.add(l.X(bx1), l.Y((by0 + by1) / 2)); b.add(l.X(bx1 - tip), l.Y(by1)); b.add(l.X(bx0 + tip), l.Y(by1)); b.finish();
+			glow_poly(c, b, l.S(10), l.S(4), Rgba { 255, 120, 24, 0.4f });
+			fill_poly(c, b, VGrad { l.Y(by0), l.Y(by1), Rgba { 26, 22, 20, 1.0f }, Rgba { 12, 11, 12, 1.0f } });
+			stroke_poly(c, b, 1.8f * l.wg.s, VGrad { l.Y(by0), l.Y(by1), Rgba { 255, 190, 112, 1.0f }, Rgba { 232, 102, 24, 1.0f } });
+			float const tw_ = l.tw(f.med, 16.5f, "Install HermOS") / l.wg.s * 1.9f;
+			float const tx = (bx0 + bx1) / 2 - (tw_ + 28) / 2;
+			l.text(f.med, tx, 416, 16.5f, Pal::white, "Install HermOS");
+			Icon::arrow_right(s, l.X(tx + tw_ + 20), l.Y(426), l.wg.s * 0.62f, Pal::white, 1.9f);
+		} else {
+			static char const *const tips[3] = { "Move the mouse to the left edge for Files and Terminal", "Meta+L and Meta+B pin the left and bottom panels", "Type in the search field to ask the Hermes agent" };
+			static float const ys[3] = { 222, 268, 314 };
+			for (int i = 0; i < 3; ++i) {
+				l.rr(535, ys[i] - 12, 24, 24, 7, Rgba { 42, 42, 44, 1.0f }, Rgba { 98, 96, 94, 0.9f }, 1.2f);
+				Icon::small_square(s, l.X(547), l.Y(ys[i]), l.wg.s * 0.42f, Rgba { 200, 200, 204, 0.8f }, true);
+				fit_text(l, f.reg, 580, ys[i] - 10, 15.0f, 360, Rgba { 232, 234, 238, 0.96f }, tips[i]);
+			}
 		}
-		/* Continue */
-		Poly b; b.n = 0;
-		float const bx0 = 673, bx1 = 878, by0 = 405, by1 = 447, tip = 16;
-		b.add(l.X(bx0), l.Y((by0 + by1) / 2)); b.add(l.X(bx0 + tip), l.Y(by0)); b.add(l.X(bx1 - tip), l.Y(by0));
-		b.add(l.X(bx1), l.Y((by0 + by1) / 2)); b.add(l.X(bx1 - tip), l.Y(by1)); b.add(l.X(bx0 + tip), l.Y(by1)); b.finish();
-		glow_poly(c, b, l.S(10), l.S(4), Rgba { 255, 120, 24, 0.4f });
-		fill_poly(c, b, VGrad { l.Y(by0), l.Y(by1), Rgba { 26, 22, 20, 1.0f }, Rgba { 12, 11, 12, 1.0f } });
-		stroke_poly(c, b, 1.8f * l.wg.s, VGrad { l.Y(by0), l.Y(by1), Rgba { 255, 190, 112, 1.0f }, Rgba { 232, 102, 24, 1.0f } });
-		float const tw_ = l.tw(f.med, 16.5f, "Continue") / l.wg.s * 1.9f;
-		float const tx = (bx0 + bx1) / 2 - (tw_ + 28) / 2;
-		l.text(f.med, tx, 416, 16.5f, Pal::white, "Continue");
-		Icon::arrow_right(s, l.X(tx + tw_ + 20), l.Y(426), l.wg.s * 0.62f, Pal::white, 1.9f);
 	}
 	win_controls(l, 780, 810, 843, 886, 41);
 }
 
 /* ------------------------------------------------------------------ 1: System */
 
-static inline void win_system(Loc &l)
+static inline void win_system(Loc &l, State const &st)
 {
 	Fonts &f = l.g.f; Canvas &c = l.g.c;
 	l.text(f.med, 88, 62, 21, Pal::white, "System");
@@ -150,13 +167,13 @@ static inline void win_system(Loc &l)
 
 	l.text(f.med, 565, 122, 22, Pal::white, "HermOS");
 	l.text(f.reg, 565, 160, 17, Rgba { 196, 200, 206, 1.0f }, "A More Human Computer");
-	static char const *const k_[7] = { "Version", "Architecture", "Uptime", "Memory", "CPU", "Graphics", "Storage" };
-	static char const *const v_[7] = { "0.1 (Prototype)", "x86_64 (NOVA)", "2 hours 14 minutes", "6.1 GB / 16 GB", "8 cores (QEMU)", "Virtio-GPU", "20 GB (QEMU Virtual Disk)" };
+	/* every value below is measured at runtime (see desktop_builder::_sync_sysinfo) */
+	static char const *const k_[7] = { "Version", "Kernel", "Uptime", "Memory", "CPU", "Graphics", "Storage" };
+	char const *const v_[7] = { st.sys.version, st.sys.kernel, st.sys.uptime, st.sys.memory, st.sys.cpu, st.sys.graphics, st.sys.storage };
 	static float const ry[7] = { 215, 242, 270, 297, 325, 352, 379 };
 	for (int i = 0; i < 7; ++i) {
-		bool const hi = (i == 3 || i == 5);
-		l.text(f.reg, 565, ry[i] - 10, 14, hi ? Pal::peach : Rgba { 232, 234, 238, 0.97f }, k_[i]);
-		l.text(f.reg, 705, ry[i] - 10, 14, Rgba { 232, 234, 238, 0.97f }, v_[i]);
+		l.text(f.reg, 565, ry[i] - 10, 14, Rgba { 232, 234, 238, 0.97f }, k_[i]);
+		fit_text(l, f.reg, 690, ry[i] - 10, 14, 215, Rgba { 232, 234, 238, 0.97f }, v_[i]);
 		if (i < 6) l.ln(565, ry[i] + 13.5f, 895, ry[i] + 13.5f, 1.0f, Rgba { 92, 88, 84, 0.4f });
 	}
 	win_controls(l, 758, 0, 810, 853, 43, false);
@@ -352,6 +369,16 @@ static inline void win_updates(Loc &l)
 	(void)c;
 }
 
+/* the Install button of the Welcome window (canvas px) */
+static inline Rect welcome_install_rect(WinRect const &r)
+{
+	WinRef const &ref = WIN_REF[0];
+	float const sc = minf(r.w / ref.w, r.h / ref.h);
+	auto X = [&](float cx) { return r.x + (cx / 1.9f - ref.ox) * sc; };
+	auto Y = [&](float cy) { return r.y + (cy / 1.9f - ref.oy) * sc; };
+	return { X(673), Y(405), (878 - 673) / 1.9f * sc, (447 - 405) / 1.9f * sc };
+}
+
 /* ------------------------------------------------- window control buttons */
 
 struct CtrlDef { float undo, mn, mx, close, cy; };    /* reference-sheet (1.9x) coordinates, 0 = absent */
@@ -387,14 +414,13 @@ static inline void draw_window(Ctx &g, int i, WinRect const &r, bool active, boo
 	if (hosted) return;                   /* a real app is blitted over the content */
 	Loc l { g, wg, ref.ox, ref.oy, 0 };
 	switch (i) {
-	case 0: win_welcome(l); break;
-	case 1: win_system(l);  break;
+	case 0: win_welcome(l, st); break;
+	case 1: win_system(l, st);  break;
 	case 2: win_files(l);   break;
 	case 3: win_hydro(l);   break;
 	case 4: win_worker(l);  break;
 	case 5: win_updates(l); break;
 	}
-	(void)st;
 }
 
 } /* namespace Scene */

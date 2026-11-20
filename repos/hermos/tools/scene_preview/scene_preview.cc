@@ -53,6 +53,21 @@ int main(int argc, char **argv)
 	static float const d[6][4] = { { 22, 555, 505, 245 }, { 555, 560, 450, 241 }, { 1065, 562, 450, 241 },
 	                               { 12, 815, 565, 206 }, { 604, 815, 372, 204 }, { 1001, 814, 511, 207 } };
 	for (int i = 0; i < 6; ++i) st.win[i] = { ox + d[i][0] * k, oy + d[i][1] * k, d[i][2] * k, d[i][3] * k };
+	/* sample values, only for looking at the layout; the OS fills these at runtime */
+	auto setstr = [](char *d, size_t n, char const *v) { snprintf(d, n, "%s", v); };
+	setstr(st.sys.version, sizeof st.sys.version, "HermOS V5 Beta (Genode 26.08)");
+	setstr(st.sys.kernel,  sizeof st.sys.kernel,  "NOVA x86_64");
+	setstr(st.sys.uptime,  sizeof st.sys.uptime,  "12 min");
+	setstr(st.sys.memory,  sizeof st.sys.memory,  "Desktop 41 of 96 MiB");
+	setstr(st.sys.cpu,     sizeof st.sys.cpu,     "4 CPUs, family 6 model 0xbe, 2.9 GHz");
+	setstr(st.sys.graphics,sizeof st.sys.graphics,"1536x1024, 32 bpp (UEFI)");
+	setstr(st.sys.storage, sizeof st.sys.storage, "QEMU NVMe Ctrl, 8 GB");
+	st.payload_ok = true;
+	struct { char const *n, *sub; int kind; bool act; int slot; } demo[] = {
+		{ "Hermes Agent", "Ready", 3, true, -1 }, { "Terminal", "Running", 1, true, 2 },
+		{ "Files", "Ready", 0, false, -1 }, { "Terminal", "Ready", 1, false, -1 }, { "Install HermOS", "Live session", 2, false, -1 } };
+	for (auto &d : demo) { auto &a = st.apps[st.app_count++]; setstr(a.name, sizeof a.name, d.n); setstr(a.sub, sizeof a.sub, d.sub); a.kind = d.kind; a.active = d.act; a.slot = d.slot; }
+	for (int i = 3; i < 6; ++i) st.win_open[i] = false;
 	if (argc > 6) { st.left.pinned = atoi(argv[6]) != 0; st.left.t = st.left.pinned ? 1.0f : 0.0f; }
 	if (argc > 7) { st.bottom.pinned = false; st.bottom.mode = atoi(argv[7]) ? Scene::Visibility::AlwaysVisible : Scene::Visibility::Hidden; st.bottom.t = atoi(argv[7]) ? 1.0f : 0.0f; }
 	else st.bottom.t = 1.0f;

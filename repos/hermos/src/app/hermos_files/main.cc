@@ -912,5 +912,7 @@ void Main::_render()
 
 void Component::construct(Genode::Env &env)
 {
+	env.exec_static_constructors();
+
 	static Hermos_files::Main main(env);
 }

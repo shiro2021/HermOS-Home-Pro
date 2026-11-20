@@ -99,16 +99,49 @@ struct Assets { Image wall, compass, hydro_thumb, hydro_big; };
 
 struct WinRect { float x, y, w, h; };
 
+static constexpr int MAX_APP_ENTRIES = 10;
+
 /* hit areas the desktop_builder uses for the panels */
 struct Hits
 {
 	Rect left_grip, bottom_grip, left_panel, bottom_panel;
 	Rect launcher[4];
 	int  launcher_count { 0 };
+	Rect app_play[MAX_APP_ENTRIES];     /* launch (inactive) */
+	Rect app_close[MAX_APP_ENTRIES];    /* stop (active) */
+	int  app_play_n { 0 };
 };
 
+/* what the desktop really knows about the system (filled by desktop_builder) */
+struct SysInfo
+{
+	char version[56]  { "HermOS V5 Beta" };
+	char kernel[56]   { "" };
+	char uptime[32]   { "" };
+	char memory[64]   { "" };
+	char cpu[72]      { "" };
+	char graphics[56] { "" };
+	char storage[72]  { "" };
+	char network[56]  { "" };
+};
+
+/* an app/service the sidebar lists: running ones on top, launchable ones below */
+struct AppEntry
+{
+	char name[24] { "" };
+	char sub[40]  { "" };
+	int  kind     { 0 };      /* 0 files, 1 terminal, 2 installer, 3 agent */
+	bool active   { false };
+	int  slot     { -1 };     /* the cell it runs in, -1 = none */
+};
 struct State
 {
+	SysInfo  sys { };
+	AppEntry apps[MAX_APP_ENTRIES] { };
+	int      app_count { 0 };
+	bool     payload_ok { false };   /* this medium can install HermOS */
+	bool     preview    { false };   /* show the mock-up preview windows */
+
 	int   cw { 1536 }, ch { 1024 };
 	Panel left   { Edge::Left,   Visibility::AutoHide,      78.0f };
 	Panel bottom { Edge::Bottom, Visibility::AlwaysVisible, 28.0f };
@@ -474,98 +507,106 @@ static inline void draw_rail(Ctx &g, State const &st)
 		}
 		g.textc(g.f.med, 1128, cy + 25.0f, 10.4f, Rgba { 245, 246, 248, 0.97f }, names[i]);
 	}
-	/* notification badge on Agents */
-	g.disc(1147, 98, 8.6f, Rgba { 255, 120, 24, 1.0f });
-	g.rng(1147, 98, 8.6f, 1.0f, Rgba { 255, 200, 140, 0.9f });
-	g.textc(g.f.semi, 1147, 90.5f, 11.5f, Pal::white, "3");
+	/* badge on Agents: the number of apps that are really running */
+	int running = 0;
+	for (int i = 0; i < st.app_count; ++i) if (st.apps[i].active) ++running;
+	if (running > 0) {
+		char num[3] = { char('0' + (running > 9 ? 9 : running)), 0, 0 };
+		g.disc(1147, 98, 8.6f, Rgba { 255, 120, 24, 1.0f });
+		g.rng(1147, 98, 8.6f, 1.0f, Rgba { 255, 200, 140, 0.9f });
+		g.textc(g.f.semi, 1147, 90.5f, 11.5f, Pal::white, num);
+	}
 }
 
 /* -------------------------------------------------- Agents & Workers panel */
 
-struct AgentRow { char const *name; char const *sub; };
-
-static inline void agent_icon_tile(Ctx &g, float x, float y, float s, int kind, bool active)
+static inline void app_icon(Ctx &g, int kind, float cx, float cy, float s, Rgba col)
 {
-	g.rr_fillg(x, y, s, s, 8, active ? Rgba { 22, 24, 24, 1.0f } : Rgba { 30, 29, 28, 1.0f });
-	g.rr_stroke(x, y, s, s, 8, 1.0f, active ? Rgba { 60, 52, 44, 0.9f } : Rgba { 82, 74, 64, 0.8f });
-	float const cx = x + s / 2, cy = y + s / 2;
-	if (active) {
-		switch (kind) {
-		case 0: g.rr_fillg(x + 1, y + 1, s - 2, s - 2, 7, Rgba { 28, 54, 34, 1.0f }); Icon::leaf(g, cx, cy, 1.05f, Rgba { 70, 200, 96, 1.0f }); break;
-		case 1: Icon::wrench(g, cx, cy, 1.15f, Rgba { 255, 150, 40, 1.0f }); break;
-		default: Icon::cloud(g, cx, cy, 1.15f, Rgba { 255, 140, 30, 1.0f }); break;
-		}
-	} else {
-		Rgba const ic { 232, 214, 190, 0.95f };
-		switch (kind) {
-		case 0: Icon::folder(g, cx, cy, 0.95f, ic); break;
-		case 1: Icon::lock(g, cx, cy, 1.0f, ic); break;
-		case 2: Icon::flask(g, cx, cy, 1.0f, ic); break;
-		case 3: Icon::folder(g, cx, cy, 0.95f, ic); g.disc(cx + 1, cy + 2, 2.2f, ic); break;
-		default: Icon::bolt(g, cx, cy, 1.0f, ic); break;
-		}
+	switch (kind) {
+	case 0: Icon::folder(g, cx, cy, s, col); break;
+	case 1: g.rr_stroke(cx - 9 * s, cy - 7 * s, 18 * s, 14 * s, 2.5f * s, 1.6f * s, col);
+	        g.ln(cx - 5 * s, cy - 2 * s, cx - 2 * s, cy + 1 * s, 1.6f * s, col);
+	        g.ln(cx - 2 * s, cy + 1 * s, cx - 5 * s, cy + 4 * s, 1.6f * s, col);
+	        g.ln(cx + 1 * s, cy + 4 * s, cx + 5 * s, cy + 4 * s, 1.6f * s, col); break;
+	case 2: Icon::arrow_right(g, cx, cy, s, col); break;
+	default: Icon::agents(g, cx, cy, s, col); break;
 	}
 }
 
-static inline void draw_sidebar(Ctx &g, State const &st)
+static inline void agent_icon_tile(Ctx &g, float x, float y, float s, int kind, bool active)
+{
+	g.rr_fillg(x, y, s, s, 8, active ? Rgba { 30, 22, 16, 1.0f } : Rgba { 30, 29, 28, 1.0f });
+	g.rr_stroke(x, y, s, s, 8, 1.0f, active ? Rgba { 120, 80, 40, 0.9f } : Rgba { 82, 74, 64, 0.8f });
+	app_icon(g, kind, x + s / 2, y + s / 2, s / 40.0f * 1.0f, active ? Rgba { 255, 170, 80, 1.0f } : Rgba { 232, 214, 190, 0.95f });
+}
+
+static inline void draw_sidebar(Ctx &g, State const &st, Hits &hits)
 {
 	float const x = 1180, y = 0, w = 356, h = 548;
 	Poly p; chamfer_poly(p, g.X(x), g.Y(y), g.L(w + 4), g.L(h), 0, 0, 0, 0);
 	fill_poly(g.c, p, VGrad { g.Y(y), g.Y(y + h), Rgba { 10, 10, 12, 0.985f }, Rgba { 8, 8, 9, 0.985f } });
 	g.ln(1180.5f, 0, 1180.5f, 548, 1.2f, Rgba { 70, 62, 54, 0.8f });
 
+	int nact = 0, nina = 0;
+	for (int i = 0; i < st.app_count; ++i) (st.apps[i].active ? nact : nina)++;
+
 	g.text(g.f.med, 1200, 12, 17.3f, Pal::white, "Agents & Workers");
 	Icon::close_x(g, 1514, 22, 0.95f, Rgba { 230, 232, 235, 0.95f }, 1.7f);
-	g.text(g.f.med, 1200, 47, 13.3f, Pal::orange, "Active (3)");
-
-	struct Card { float y, h; int kind; char const *name, *sub; } cards[3] = {
-		{ 69, 58, 0, "Hydroponics Agent", "Capturing image in 2 min..." },
-		{ 137, 61, 1, "System Maintenance", "Running scheduled tasks..." },
-		{ 204, 56, 2, "Weather Monitor", "Checking conditions..." },
-	};
-	for (int i = 0; i < 3; ++i) {
-		Card const &cd = cards[i];
-		float const cx0 = 1195, cw = 327;
-		Poly cp = Poly(); chamfer_poly(cp, g.X(cx0), g.Y(cd.y), g.L(cw), g.L(cd.h), g.L(9), g.L(9), g.L(9), g.L(9));
-		glow_poly(g.c, cp, g.L(10), g.L(4), Rgba { 255, 110, 20, 0.42f });
-		fill_poly(g.c, cp, VGrad { g.Y(cd.y), g.Y(cd.y + cd.h), Rgba { 29, 18, 11, 1.0f }, Rgba { 17, 12, 9, 1.0f } });
-		stroke_poly(g.c, cp, g.L(1.8f), VGrad { g.Y(cd.y), g.Y(cd.y + cd.h), Rgba { 255, 150, 60, 1.0f }, Rgba { 236, 104, 24, 1.0f } });
-		g.disc(1204, cd.y + 11, 1.9f, Rgba { 255, 140, 40, 1.0f });
-		g.disc(1204, cd.y + cd.h - 12, 1.9f, Rgba { 255, 140, 40, 1.0f });
-		float const ty = cd.y + (cd.h - 40) / 2;
-		agent_icon_tile(g, 1211, ty, 40, cd.kind, true);
-		float const nty = i == 2 ? cd.y + 11 : cd.y + 11;
-		g.text(g.f.med, 1261, nty + 1, 11.2f, Pal::white, cd.name);
-		g.text(g.f.reg, 1261, nty + 21, 10.6f, Rgba { 188, 192, 198, 1.0f }, cd.sub);
-		Icon::dots(g, 1497, cd.y + (i == 1 ? 14 : cd.h / 2 - 1), 0.62f, Rgba { 232, 234, 237, 0.95f });
+	char hdr[24];
+	{
+		/* "Active (n)" */
+		int n = nact; int k = 0;
+		char const *t = "Active ("; while (*t) hdr[k++] = *t++;
+		if (n >= 10) hdr[k++] = char('0' + n / 10);
+		hdr[k++] = char('0' + n % 10); hdr[k++] = ')'; hdr[k] = 0;
 	}
-	/* hydroponics thumbnail */
-	draw_image(g.c, g.a.hydro_thumb, g.X(1413), g.Y(76), g.L(67), g.L(46),
-	           [&](float px, float py) { return sd_rrect(px, py, g.X(1446.5f), g.Y(99), g.L(33.5f), g.L(23), g.L(3)); });
-	stroke_rrect(g.c, g.X(1413), g.Y(76), g.L(67), g.L(46), g.L(3), g.L(1.0f), Solid { Rgba { 220, 224, 228, 0.7f } });
-	g.disc(1263, 112, 2.0f, Rgba { 255, 130, 30, 1.0f });   /* status dot */
-	/* progress bar on the maintenance card */
-	g.rr_fill(1261, 181, 187, 7.5f, 3.7f, Rgba { 46, 40, 36, 1.0f });
-	g.rr_fillg(1261, 181, 187 * 0.82f, 7.5f, 3.7f, HGrad { g.X(1261), g.X(1261 + 154), Rgba { 255, 170, 70, 1.0f }, Rgba { 236, 110, 28, 1.0f } });
-	g.textr(g.f.reg, 1462, 178, 8.0f, Rgba { 214, 216, 220, 1.0f }, "82%");
+	g.text(g.f.med, 1200, 47, 13.3f, Pal::orange, hdr);
 
-	g.text(g.f.med, 1200, 273, 13.4f, Pal::white, "Inactive (5)");
-	static AgentRow const rows[5] = { { "Media Organizer", "Ready" }, { "Home Security", "Ready" }, { "Research Assistant", "Ready" },
-	                                  { "Backup Worker", "Ready" }, { "Energy Monitor", "Ready" } };
-	for (int i = 0; i < 5; ++i) {
-		float const ry = 297.5f + float(i) * 51.2f, rh = 48;
-		Poly rp; chamfer_poly(rp, g.X(1195), g.Y(ry), g.L(327), g.L(rh), g.L(8), g.L(8), g.L(8), g.L(8));
-		fill_poly(g.c, rp, VGrad { g.Y(ry), g.Y(ry + rh), Rgba { 17, 17, 19, 1.0f }, Rgba { 12, 12, 14, 1.0f } });
-		stroke_poly(g.c, rp, g.L(1.1f), Solid { Rgba { 86, 76, 66, 0.85f } });
-		agent_icon_tile(g, 1210, ry + 6, 36, i, false);
-		g.text(g.f.med, 1261, ry + 7, 11.1f, Pal::white, rows[i].name);
-		g.text(g.f.reg, 1261, ry + 25.5f, 10.5f, Rgba { 178, 180, 184, 1.0f }, rows[i].sub);
-		/* play + dots */
-		g.rr_fill(1446, ry + 7, 33, 33, 8, Rgba { 36, 35, 36, 1.0f });
-		g.rr_stroke(1446, ry + 7, 33, 33, 8, 1.0f, Rgba { 96, 88, 78, 0.9f });
-		Icon::play(g, 1462, ry + 23.5f, 0.78f, Rgba { 238, 214, 190, 1.0f });
-		Icon::dots(g, 1497, ry + 24, 0.62f, Rgba { 232, 234, 237, 0.95f });
+	hits.app_play_n = st.app_count;
+	int ai = 0, ii = 0;
+	for (int i = 0; i < st.app_count; ++i) {
+		AppEntry const &a = st.apps[i];
+		if (a.active) {
+			if (ai >= 3) continue;
+			float const cy = 69 + float(ai) * 67, ch = 58;
+			Poly cp = Poly(); chamfer_poly(cp, g.X(1195), g.Y(cy), g.L(327), g.L(ch), g.L(9), g.L(9), g.L(9), g.L(9));
+			glow_poly(g.c, cp, g.L(10), g.L(4), Rgba { 255, 110, 20, 0.42f });
+			fill_poly(g.c, cp, VGrad { g.Y(cy), g.Y(cy + ch), Rgba { 29, 18, 11, 1.0f }, Rgba { 17, 12, 9, 1.0f } });
+			stroke_poly(g.c, cp, g.L(1.8f), VGrad { g.Y(cy), g.Y(cy + ch), Rgba { 255, 150, 60, 1.0f }, Rgba { 236, 104, 24, 1.0f } });
+			g.disc(1204, cy + 11, 1.9f, Rgba { 255, 140, 40, 1.0f });
+			g.disc(1204, cy + ch - 12, 1.9f, Rgba { 255, 140, 40, 1.0f });
+			agent_icon_tile(g, 1211, cy + (ch - 40) / 2, 40, a.kind, true);
+			g.text(g.f.med, 1261, cy + 12, 11.2f, Pal::white, a.name);
+			g.text(g.f.reg, 1261, cy + 32, 10.6f, Rgba { 188, 192, 198, 1.0f }, a.sub);
+			if (a.slot >= 0) {                    /* running app: a close button */
+				g.rr_fill(1478, cy + 12, 32, 32, 8, Rgba { 36, 28, 22, 1.0f });
+				g.rr_stroke(1478, cy + 12, 32, 32, 8, 1.0f, Rgba { 150, 100, 60, 0.9f });
+				Icon::close_x(g, 1494, cy + 28, 0.7f, Rgba { 240, 220, 200, 1.0f }, 1.8f);
+				hits.app_close[i] = { 1478, cy + 12, 32, 32 };
+			}
+			++ai;
+		} else {
+			if (ii >= 5) continue;
+			float const ry = 297.5f + float(ii) * 51.2f, rh = 48;
+			Poly rp; chamfer_poly(rp, g.X(1195), g.Y(ry), g.L(327), g.L(rh), g.L(8), g.L(8), g.L(8), g.L(8));
+			fill_poly(g.c, rp, VGrad { g.Y(ry), g.Y(ry + rh), Rgba { 17, 17, 19, 1.0f }, Rgba { 12, 12, 14, 1.0f } });
+			stroke_poly(g.c, rp, g.L(1.1f), Solid { Rgba { 86, 76, 66, 0.85f } });
+			agent_icon_tile(g, 1210, ry + 6, 36, a.kind, false);
+			g.text(g.f.med, 1261, ry + 7, 11.1f, Pal::white, a.name);
+			g.text(g.f.reg, 1261, ry + 25.5f, 10.5f, Rgba { 178, 180, 184, 1.0f }, a.sub);
+			g.rr_fill(1478, ry + 7, 33, 33, 8, Rgba { 36, 35, 36, 1.0f });
+			g.rr_stroke(1478, ry + 7, 33, 33, 8, 1.0f, Rgba { 96, 88, 78, 0.9f });
+			Icon::play(g, 1494, ry + 23.5f, 0.78f, Rgba { 238, 214, 190, 1.0f });
+			hits.app_play[i] = { 1478, ry + 7, 33, 33 };
+			++ii;
+		}
 	}
+	if (nact == 0)
+		g.text(g.f.reg, 1200, 100, 12.0f, Rgba { 150, 156, 164, 1.0f }, "Nothing is running.");
+
+	char ihdr[24]; { int k = 0; char const *t = "Available ("; while (*t) ihdr[k++] = *t++;
+	                 ihdr[k++] = char('0' + (nina > 9 ? 9 : nina)); ihdr[k++] = ')'; ihdr[k] = 0; }
+	g.text(g.f.med, 1200, 273, 13.4f, Pal::white, ihdr);
 }
 
 /* ------------------------------------------------------------- taskbar */
@@ -609,7 +650,7 @@ static inline void draw_left_dock(Ctx &g, State const &st, Hits &hits)
 	hits.left_panel = { 0, 0, 0, 0 };
 	if (sh <= 0.002f) return;
 	float const x = -(tw_ + 6) * (1.0f - sh);
-	float const y = 120, h = 330;
+	float const y = 120, h = 40.0f + float(st.payload_ok ? 3 : 2) * 68.0f - 4.0f;
 	hits.left_panel = { x, y, tw_, h };
 
 	Poly p; chamfer_poly(p, g.X(x), g.Y(y), g.L(tw_), g.L(h), 0, g.L(16), g.L(16), 0);
@@ -617,16 +658,16 @@ static inline void draw_left_dock(Ctx &g, State const &st, Hits &hits)
 	fill_poly(g.c, p, VGrad { g.Y(y), g.Y(y + h), Rgba { 17, 17, 19, 0.96f }, Rgba { 9, 9, 10, 0.97f } });
 	stroke_poly(g.c, p, g.L(1.3f), Solid { Rgba { 110, 94, 76, 0.9f } });
 
-	static char const *const labels[4] = { "Files", "Terminal", "Agents", "Install" };
-	hits.launcher_count = 4;
-	for (int i = 0; i < 4; ++i) {
+	static char const *const labels[3] = { "Files", "Terminal", "Install" };
+	int const count = st.payload_ok ? 3 : 2;
+	hits.launcher_count = count;
+	for (int i = 0; i < count; ++i) {
 		float const cy = y + 40 + float(i) * 68, cx = x + tw_ / 2 - 3;
-		hex_tile(g, cx, cy, 48, 46, i == 3);
+		hex_tile(g, cx, cy, 48, 46, i == 2);
 		Rgba const ic { 236, 238, 240, 0.96f };
 		switch (i) {
 		case 0: Icon::folder(g, cx, cy, 1.0f, ic); break;
 		case 1: g.rr_stroke(cx - 9, cy - 7, 18, 14, 2.5f, 1.6f, ic); g.ln(cx - 5, cy - 2, cx - 2, cy + 1, 1.6f, ic); g.ln(cx - 2, cy + 1, cx - 5, cy + 4, 1.6f, ic); g.ln(cx + 1, cy + 4, cx + 5, cy + 4, 1.6f, ic); break;
-		case 2: Icon::agents(g, cx, cy, 1.0f, ic); break;
 		default: Icon::arrow_right(g, cx, cy, 0.9f, Pal::white); break;
 		}
 		g.textc(g.f.med, cx, cy + 25.0f, 10.4f, Rgba { 245, 246, 248, 0.97f }, labels[i]);
@@ -770,14 +811,14 @@ static inline Ctx make_ctx(Canvas &c, Fonts &f, Assets &a)
 /* Base layer: everything that does not animate with the hideable panels.
  * desktop_builder caches this frame and only redraws it when the windows,
  * the search text or the clock change. */
-static inline void render_base(Canvas &c, Fonts &f, Assets &a, State &st)
+static inline void render_base(Canvas &c, Fonts &f, Assets &a, State &st, Hits &hits)
 {
 	Ctx g = make_ctx(c, f, a);
 	draw_wallpaper(g);
 	draw_header(g);
 	draw_greeting_search(g, st);
 	draw_rail(g, st);
-	draw_sidebar(g, st);
+	draw_sidebar(g, st, hits);
 
 	/* the six windows, in z-order */
 	for (int oi = 0; oi < 6; ++oi) {
@@ -792,11 +833,10 @@ static inline void render_base(Canvas &c, Fonts &f, Assets &a, State &st)
 static inline void render_panels(Canvas &c, Fonts &f, Assets &a, State &st, Hits &hits)
 {
 	Ctx g = make_ctx(c, f, a);
-	hits = Hits();
 	draw_taskbar(g, st);
 	draw_left_dock(g, st, hits);
 
-	hits.left_grip   = { 0, 120, 6, 330 };
+	hits.left_grip   = { 0, 120, 6, 220 };
 	hits.bottom_grip = { 380, 516, 330, 20 };
 	if (!st.bottom.visible()) g.rr_fill(520, 524, 50, 4, 2, Rgba { 255, 170, 80, 0.55f });
 	if (!st.left.visible())   g.rr_fill(3, 245, 4, 80, 2, Rgba { 255, 170, 80, 0.55f });
@@ -805,7 +845,7 @@ static inline void render_panels(Canvas &c, Fonts &f, Assets &a, State &st, Hits
 /* whole frame in one call (host preview) */
 static inline void render(Canvas &c, Fonts &f, Assets &a, State &st, Hits &hits)
 {
-	render_base(c, f, a, st);
+	render_base(c, f, a, st, hits);
 	render_panels(c, f, a, st, hits);
 }
 

@@ -401,6 +401,11 @@ namespace Hermos {
 		Genode::String<48> _sclock { };
 		unsigned long _last_tick_ms { 0 };
 
+		/* ---- what the desktop really knows (see _sync_sysinfo) ---- */
+		Constructible<Attached_rom_dataspace> _platform_info { };
+		bool _preview     { false };   /* show the mock-up preview windows (config: preview="yes") */
+		bool _ai_waiting  { false };   /* a prompt was sent and no answer has come back yet */
+
 		void _draw_icon(char const *name, int cx, int cy)
 		{
 			/* geometric placeholders — no asset pipeline for complex icons yet */
@@ -1951,11 +1956,21 @@ namespace Hermos {
 		{
 			int slot = -1;
 			for (int i = 0; i < MAX_APPS; ++i)
-				if (_app_kind[i] == APP_NONE) { slot = i; break; }
+				if (_app_kind[i] == APP_NONE && !_win_open[i]) { slot = i; break; }
 			if (slot < 0) { log("HermOS: all Cell slots busy"); return; }
 			_app_kind[slot] = kind;
+			_win_open[slot] = true;
 			log("HermOS: launching '", _app_binary(kind), "' into slot ", slot);
 			_emit_apps_config();
+			_dirty = true;
+		}
+
+		void _open_installer()
+		{
+			if (!_payload_ok()) { log("HermOS: this image carries no installer payload"); return; }
+			_installer_mode = true; _installer_step = 0; _installer_confirm = false;
+			_select_disk(_disk_sel);
+			log("HermOS: launching installer");
 			_dirty = true;
 		}
 
@@ -2283,6 +2298,7 @@ namespace Hermos {
 			size_t const n = _ai_command->size();
 			_ai_response = Genode::String<2048>(Cstring(p, n < 2047 ? n : 2047));
 			log("HermOS ai_command: ", n, " bytes: '", _ai_response, "'");
+			_ai_waiting = false;
 			_render();
 		}
 
@@ -2290,6 +2306,7 @@ namespace Hermos {
 		{
 			if (_prompt_len == 0) return;
 			log("HermOS submitting prompt: '", static_cast<char const *>(_prompt), "'");
+			_ai_waiting = true;
 			(void)_ui_intent.generate_xml([&] (Xml_generator &g) {
 				g.attribute("prompt", _prompt);
 			});
@@ -3212,9 +3229,88 @@ namespace Hermos {
 			                                   : "assets missing, using the legacy renderer");
 		}
 
+		static void _cpy(char *d, size_t n, char const *v) { size_t i = 0; for (; v[i] && i + 1 < n; ++i) d[i] = v[i]; d[i] = 0; }
+
+		/* Every value shown in the System window comes from here: the kernel's
+		 * platform_info, the framebuffer, the disk reports, the clock and this
+		 * component's own memory. Nothing is made up; what is unknown is omitted. */
+		void _sync_sysinfo()
+		{
+			Scene::SysInfo &si = _sstate.sys;
+			_cpy(si.version, sizeof si.version, "HermOS V5 Beta (Genode 26.08)");
+
+			unsigned long const ms = _timer.elapsed_ms();
+			unsigned const mins = (unsigned)(ms / 60000), secs = (unsigned)(ms / 1000);
+			_cpy(si.uptime, sizeof si.uptime,
+			     mins >= 60 ? Genode::String<32>(mins / 60, " h ", mins % 60, " min").string()
+			   : mins >= 1  ? Genode::String<32>(mins, " min").string()
+			                : Genode::String<32>(secs, " s").string());
+
+			/* this release has no RAM-usage query for a component; the heaps know what they hold */
+			size_t const held = _asset_heap.consumed() + _heap.consumed();
+			_cpy(si.memory, sizeof si.memory,
+			     Genode::String<64>("Desktop process: ", (unsigned)(held >> 20), " MiB").string());
+
+			if (!_platform_info.constructed()) { try { _platform_info.construct(_env, "platform_info"); } catch (...) { } }
+			unsigned cpus = 0; Genode::String<8> fam, mod; unsigned long khz = 0; Genode::String<16> kernel("");
+			if (_platform_info.constructed()) {
+				Node const &pi = _platform_info->node();
+				pi.with_optional_sub_node("kernel", [&] (Node const &k) { kernel = k.attribute_value("name", Genode::String<16>("")); });
+				pi.with_optional_sub_node("hardware", [&] (Node const &hw) {
+					hw.with_optional_sub_node("tsc", [&] (Node const &t) { khz = t.attribute_value("freq_khz", 0UL); });
+					hw.with_optional_sub_node("cpus", [&] (Node const &c) {
+						c.for_each_sub_node("cpu", [&] (Node const &cpu) {
+							if (cpus++ == 0) { fam = cpu.attribute_value("family", Genode::String<8>("?"));
+							                   mod = cpu.attribute_value("model", Genode::String<8>("?")); }
+						});
+					});
+				});
+			}
+			_cpy(si.kernel, sizeof si.kernel, kernel == "nova" ? "NOVA microhypervisor, x86_64"
+			     : kernel.valid() && kernel.length() > 1 ? Genode::String<56>(kernel, ", x86_64").string() : "x86_64");
+			if (cpus) {
+				Genode::String<72> cpu(cpus, cpus == 1 ? " CPU" : " CPUs", ", family ", fam, " model ", mod);
+				if (khz) cpu = Genode::String<72>(cpu, ", ", (unsigned)(khz / 1000000), ".", (unsigned)((khz / 100000) % 10), " GHz");
+				_cpy(si.cpu, sizeof si.cpu, cpu.string());
+			} else _cpy(si.cpu, sizeof si.cpu, "not reported");
+			_cpy(si.graphics, sizeof si.graphics, Genode::String<56>(_w, "x", _h, ", 32 bpp (boot framebuffer)").string());
+			if (_disk_count > 0) {
+				Genode::String<72> d(_disks[0].model, ", ", (unsigned)(_disks[0].bytes() / (1024ull * 1024 * 1024)), " GB");
+				if (_disk_count > 1) d = Genode::String<72>(d, " +", _disk_count - 1, " more");
+				_cpy(si.storage, sizeof si.storage, d.string());
+			} else _cpy(si.storage, sizeof si.storage, "no disk found");
+		}
+
+		/* The sidebar lists what really runs and what can really be started. */
+		void _sync_apps()
+		{
+			Scene::State &st = _sstate;
+			st.app_count = 0;
+			auto add = [&] (char const *name, char const *sub, int kind, bool active, int slot) {
+				if (st.app_count >= Scene::MAX_APP_ENTRIES) return;
+				Scene::AppEntry &a = st.apps[st.app_count++];
+				_cpy(a.name, sizeof a.name, name); _cpy(a.sub, sizeof a.sub, sub);
+				a.kind = kind; a.active = active; a.slot = slot;
+			};
+			add("Hermes Agent", _ai_waiting ? "Waiting for an answer..." : "Ready", 3, true, -1);
+			for (int i = 0; i < MAX_APPS; ++i) {
+				if (_app_kind[i] == APP_NONE) continue;
+				bool const up = _gui_root.cells().at(i) != nullptr;
+				add(_app_kind[i] == APP_TERMINAL ? "Terminal" : "Files", up ? "Running" : "Starting...",
+				    _app_kind[i] == APP_TERMINAL ? 1 : 0, true, i);
+			}
+			add("Files", "Browse files", 0, false, -1);
+			add("Terminal", "Open a shell", 1, false, -1);
+			if (_payload_ok()) add("Install HermOS", "From this live session", 2, false, -1);
+		}
+
 		void _sync_scene()
 		{
 			Scene::State &st = _sstate;
+			_sync_sysinfo();
+			_sync_apps();
+			st.payload_ok = _payload_ok();
+			st.preview    = _preview;
 			st.cw = _w; st.ch = _h;
 			st.clock       = _scene_clock();
 			st.prompt      = _prompt_len ? _prompt : nullptr;
@@ -3223,7 +3319,7 @@ namespace Hermos {
 			for (int i = 0; i < NUM_CELLS; ++i) {
 				st.win[i]       = { float(_win_x(i)), float(_win_y(i)), float(_cell_w(i)), float(_cell_h(i)) };
 				st.win_open[i]  = _win_open[i];
-				st.win_hosted[i] = _gui_root.cells().at(i) != nullptr;
+				st.win_hosted[i] = _app_kind[i] != APP_NONE || _gui_root.cells().at(i) != nullptr;
 			}
 			for (int oi = 0; oi < NUM_CELLS; ++oi) st.order[oi] = _draw_order[oi];
 		}
@@ -3237,7 +3333,11 @@ namespace Hermos {
 				mix(unsigned(st.win[i].x)); mix(unsigned(st.win[i].y)); mix(unsigned(st.win[i].w)); mix(unsigned(st.win[i].h));
 				mix(st.win_open[i]); mix(st.win_hosted[i]); mix(unsigned(st.order[i]));
 			}
-			mix(unsigned(st.active_win)); mix(st.search_focus);
+			mix(unsigned(st.active_win)); mix(st.search_focus); mix(st.payload_ok);
+			for (char const *c = st.sys.uptime; *c; ++c) mix(unsigned(*c));
+			for (char const *c = st.sys.memory; *c; ++c) mix(unsigned(*c));
+			for (char const *c = st.sys.storage; *c; ++c) mix(unsigned(*c));
+			for (int i = 0; i < st.app_count; ++i) { mix(st.apps[i].active); mix(unsigned(st.apps[i].kind)); mix(unsigned(st.apps[i].slot + 1)); for (char const *c = st.apps[i].sub; *c; ++c) mix(unsigned(*c)); }
 			for (char const *c = st.clock; c && *c; ++c) mix(unsigned(*c));
 			for (char const *c = st.prompt; c && *c; ++c) mix(unsigned(*c));
 			return h;
@@ -3249,7 +3349,7 @@ namespace Hermos {
 			unsigned const hsh = _scene_state_hash();
 			if (!_scene_valid || hsh != _scene_hash) {
 				Scene::Canvas c { _scene_px, _w, _h };
-				Scene::render_base(c, _sfonts, _sassets, _sstate);
+				Scene::render_base(c, _sfonts, _sassets, _sstate, _shits);
 				_scene_hash = hsh; _scene_valid = true;
 			}
 			Genode::memcpy(_px, _scene_px, size_t(_w) * size_t(_h) * 4);
@@ -3288,6 +3388,30 @@ namespace Hermos {
 		bool _scene_click(int x, int y)
 		{
 			Scene::Map const m = Scene::map_for(_w, _h);
+
+			/* sidebar: start an app, or stop a running one */
+			for (int i = 0; i < _sstate.app_count; ++i) {
+				Scene::AppEntry const &a = _sstate.apps[i];
+				if (!a.active && m.hit(_shits.app_play[i], x, y)) {
+					if (a.kind == 0) _launch_app(APP_FILES);
+					else if (a.kind == 1) _launch_app(APP_TERMINAL);
+					else if (a.kind == 2) _open_installer();
+					_dirty = true; return true;
+				}
+				if (a.active && a.slot >= 0 && m.hit(_shits.app_close[i], x, y)) {
+					_win_open[a.slot] = false;
+					_gui_root.close_cell(a.slot);
+					_close_app(a.slot);
+					_dirty = true; return true;
+				}
+			}
+
+			/* the Install button of the Welcome window */
+			if (_payload_ok() && _win_open[0] && _app_kind[0] == APP_NONE) {
+				Scene::Rect const r = Scene::welcome_install_rect(
+					{ float(_win_x(0)), float(_win_y(0)), float(_cell_w(0)), float(_cell_h(0)) });
+				if (float(x) >= r.x && float(x) < r.x + r.w && float(y) >= r.y && float(y) < r.y + r.h) { _open_installer(); return true; }
+			}
 
 			/* window control buttons, topmost window under the pointer first */
 			for (int oi = NUM_CELLS - 1; oi >= 0; --oi) {
@@ -3335,11 +3459,7 @@ namespace Hermos {
 					switch (k) {
 					case 0: _launch_app(APP_FILES);    break;
 					case 1: _launch_app(APP_TERMINAL); break;
-					case 2: _launch_app(APP_TESTNIT);  break;
-					default:
-						_installer_mode = true; _installer_step = 0;
-						log("HermOS: launching installer");
-						break;
+					default: _open_installer();        break;
 					}
 					_dirty = true;
 					return true;
@@ -3787,6 +3907,12 @@ namespace Hermos {
 			_pointer_y = _h / 2;
 
 			_init_scene();
+
+			/* only Welcome and System are real windows; the other four slots are for apps.
+			 * The mock-up preview windows (Files, Hydroponics, Create Worker, Updates)
+			 * show invented content and are off unless config preview="yes". */
+			_preview = _config.node().attribute_value("preview", false);
+			if (!_preview) for (int i = 2; i < NUM_CELLS; ++i) _win_open[i] = false;
 
 			/* installable disks, reported by the ahci/nvme drivers */
 			try { _ahci_ports.construct(_env, "ahci_ports"); _ahci_ports->sigh(_disks_sigh); } catch (...) { }
