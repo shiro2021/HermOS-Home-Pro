@@ -105,6 +105,7 @@ static constexpr int MAX_APP_ENTRIES = 10;
 struct Hits
 {
 	Rect left_grip, bottom_grip, left_panel, bottom_panel;
+	Rect pane_reveal;                   /* the slim bar left on the edge while the pane is hidden */
 	Rect pane_close;                    /* the X of the Agents & Workers pane (hides it) */
 	Rect rail[6];                       /* navigation rail tiles; tile 0 (Agents) toggles the pane */
 	Rect launcher[4];
@@ -179,6 +180,7 @@ struct State
 	Panel left   { Edge::Left,   Visibility::AutoHide,      78.0f };
 	Panel bottom { Edge::Bottom, Visibility::AlwaysVisible, 28.0f };
 	Panel right  { Edge::Right,  Visibility::AlwaysVisible, 356.0f };   /* Agents & Workers pane + rail */
+	float right_slim { 26.0f };            /* width of the slim bar that stays when the pane is hidden (design px) */
 
 	char const *clock   { "Tue 10 Dec 2024 07:42" };
 	char const *prompt  { nullptr };       /* user-typed text, null = placeholder */
@@ -956,11 +958,27 @@ static inline void render_panels(Canvas &c, Fonts &f, Assets &a, State &st, Hits
 		float const sh = st.right.shown();
 		float const pane_w = st.right.thickness;
 		Rect const none { 0, 0, 0, 0 };
-		hits.pane_close = none;
+		hits.pane_close = none; hits.pane_reveal = none;
+		float const slim = st.right_slim;
+
+		/* the slim bar: always there, under the pane; clicking it brings the pane back */
+		{
+			float const bx = DW - slim, by = 0, bh = 548;
+			Poly bp; chamfer_poly(bp, g.X(bx), g.Y(by), g.L(slim + 4), g.L(bh), 0, 0, 0, 0);
+			fill_poly(g.c, bp, VGrad { g.Y(by), g.Y(by + bh), Rgba { 10, 10, 12, 0.985f }, Rgba { 8, 8, 9, 0.985f } });
+			g.ln(bx + 0.5f, by, bx + 0.5f, by + bh, 1.2f, Rgba { 70, 62, 54, 0.8f });
+			/* chevron pointing into the screen, and a thin pill, centred on the bar */
+			float const cx = bx + slim * 0.5f, cy = bh * 0.5f;
+			g.ln(cx + 3.5f, cy - 7, cx - 3.5f, cy, 2.0f, Rgba { 255, 170, 80, 0.95f });
+			g.ln(cx - 3.5f, cy, cx + 3.5f, cy + 7, 2.0f, Rgba { 255, 170, 80, 0.95f });
+			g.rr_fill(cx - 1.5f, cy - 34, 3, 16, 1.5f, Rgba { 255, 170, 80, 0.45f });
+			g.rr_fill(cx - 1.5f, cy + 18, 3, 16, 1.5f, Rgba { 255, 170, 80, 0.45f });
+			if (sh < 0.5f) hits.pane_reveal = { bx, by, slim, bh };
+		}
 		for (int i = 0; i < MAX_APP_ENTRIES; ++i) { hits.app_close[i] = none; hits.app_play[i] = none; }
 		hits.app_play_n = 0;
 
-		float const rdx = (1.0f - sh) * pane_w;                 /* rail: ends docked at the right edge */
+		float const rdx = (1.0f - sh) * (pane_w - slim);        /* rail: ends docked beside the slim bar */
 		Ctx gr = g; gr.ox += g.L(rdx);
 		draw_rail(gr, st, hits);
 		for (int i = 0; i < 6; ++i) hits.rail[i].x += rdx;

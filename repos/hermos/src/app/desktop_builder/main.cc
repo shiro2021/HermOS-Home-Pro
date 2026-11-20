@@ -1820,7 +1820,11 @@ namespace Hermos {
 		uint8_t _dock_r     {  46 }, _dock_g     {  50 }, _dock_b     {  56 };
 		int _sb_x { 901 }, _sb_y { 77 }, _sb_w { 102 }, _sb_h { 614 };
 		/* width the right pane takes right now (0 while it is hidden): Cells may use the space */
-		int _sb_w_live() const { return int(float(_sb_w) * _sstate.right.t); }
+		int _sb_w_live() const
+		{
+			float const slim = _sstate.right_slim * float(_w) / Scene::DW;   /* the slim bar stays */
+			return int(float(_sb_w) * _sstate.right.t + slim * (1.0f - _sstate.right.t));
+		}
 
 		/* Step 3: the normalized snap slots from the theme_state report */
 		enum { MAX_SNAPS = 4 };
@@ -3596,6 +3600,7 @@ namespace Hermos {
 			Scene::Map const m = Scene::map_for(_w, _h);
 
 			/* the right group: the pane's X hides it; the rail's Agents tile hides or reveals it */
+			if (m.hit(_shits.pane_reveal, x, y)) { _sstate.right.toggle(); _dirty = true; return true; }
 			if (m.hit(_shits.pane_close, x, y) && _sstate.right.visible()) { _sstate.right.toggle(); _dirty = true; return true; }
 			if (m.hit(_shits.rail[0], x, y)) { _sstate.right.toggle(); _dirty = true; return true; }
 
@@ -3902,7 +3907,10 @@ namespace Hermos {
 					};
 					panels.with_optional_sub_node("left",   [&] (Xml_node const &n) { apply(_sstate.left,   n); });
 					panels.with_optional_sub_node("bottom", [&] (Xml_node const &n) { apply(_sstate.bottom, n); });
-					panels.with_optional_sub_node("right",  [&] (Xml_node const &n) { apply(_sstate.right,  n); });
+					panels.with_optional_sub_node("right",  [&] (Xml_node const &n) {
+						apply(_sstate.right, n);
+						_sstate.right_slim = float(n.attribute_value("slim", (unsigned long)_sstate.right_slim));
+					});
 					_sstate.left.t   = _sstate.left.wants_shown()   ? 1.0f : 0.0f;
 					_sstate.bottom.t = _sstate.bottom.wants_shown() ? 1.0f : 0.0f;
 					_sstate.right.t  = _sstate.right.wants_shown()  ? 1.0f : 0.0f;

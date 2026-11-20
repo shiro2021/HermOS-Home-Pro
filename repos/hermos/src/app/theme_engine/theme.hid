@@ -119,3 +119,5 @@ theme
   + right
     mode: visible
     size: 356
+    # width of the slim bar that stays on the edge while the pane is hidden
+    slim: 26
