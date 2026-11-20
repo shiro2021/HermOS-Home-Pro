@@ -77,7 +77,11 @@ class Job
 {
 	public:
 
-		static constexpr size_t CHUNK = 1u << 20;        /* 1 MiB per I/O */
+		/* Per-request transfer size. Controllers limit a request (the NVMe maximum
+		 * data transfer size is as low as 512 KiB in QEMU, and Genode's NVMe
+		 * driver reported success for a larger request while dropping the tail),
+		 * so stay at 128 KiB, which every SATA and NVMe controller accepts. */
+		static constexpr size_t CHUNK = 128u << 10;
 		static constexpr uint32_t ALIGN = 2048;           /* 1 MiB in sectors */
 
 	private:
