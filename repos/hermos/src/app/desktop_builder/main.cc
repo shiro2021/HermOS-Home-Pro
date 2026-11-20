@@ -581,6 +581,7 @@ namespace Hermos {
 				if (d.block_size != 512) continue;
 				try {
 					_block.construct(_env, &_block_alloc, 256 * 1024, Genode::Session_label(d.label.string()));
+					_block->sigh(_block_sigh);       /* without this the I/O acknowledgement never arrives */
 					_blk_info = _block->info();
 					Installer::PartInfo pi;
 					bool const gpt = Installer::find_partition(_inst_io, "HERMOS-DATA", pi);
