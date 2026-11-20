@@ -829,6 +829,7 @@ namespace Hermos {
 
 		/* min helpers (the toolchain has no <algorithm>) */
 		static int _min2(int a, int b) { return a < b ? a : b; }
+		static int _max2(int a, int b) { return a > b ? a : b; }
 		static int _min3(int a, int b, int c) { return _min2(_min2(a, b), c); }
 
 		/* 1. The 8 vertices of the chamfered rectangle (clockwise).
@@ -1911,6 +1912,36 @@ namespace Hermos {
 			_set(x, y, 255, 255, 255);
 		}
 
+		/*
+		 * Content area of Cell i, derived from the Cell's own octagon: the side and
+		 * title margins are fixed frame furniture, the bottom margin grows with the
+		 * chamfer so the lower corners keep clear of the diagonal edges.
+		 */
+		struct Content { int l, t, r, b, c, x, y, w, h; };
+
+		Content _content(int i) const
+		{
+			Content k;
+			k.w = _cell_w(i); k.h = _cell_h(i);
+			k.x = _win_x(i);  k.y = _win_y(i);
+			k.c = _chamfer[i] * _min2(k.w, k.h) / 100;
+			int const border = 14, title = 38;
+			k.l = k.x + border;           k.r = k.x + k.w - border;
+			k.t = k.y + title + k.c / 3; k.b = k.y + k.h - (8 + k.c / 3);
+			return k;
+		}
+
+		/* horizontal extent of the inner octagon at screen row py (inside the frame border) */
+		void _content_span(Content const &k, int py, int &xl, int &xr) const
+		{
+			/* the diagonal's inner edge sits one border-width (measured along x) inside the chamfer line */
+			int const from_top = py - k.y, from_bot = k.y + k.h - 1 - py;
+			int const d = from_top < from_bot ? from_top : from_bot;
+			int const ins = _max2(0, k.c + 14 - d);
+			xl = _max2(k.l, k.x + ins);
+			xr = _min2(k.r, k.x + k.w - ins);
+		}
+
 		/* composite one hosted app's framebuffer into Cell i */
 		void _blit_cell(int i, Cell_session *hosted)
 		{
@@ -1920,16 +1951,14 @@ namespace Hermos {
 			int const sw = hosted->fb_w(), sh = hosted->fb_h();
 			if (sw <= 0 || sh <= 0) return;
 
-			int const cw = _cell_w(i), ch = _cell_h(i);
-			int const x = _win_x(i), y = _win_y(i);
-			int const left = x + 14,  right = x + cw - 14;
-			int const top  = y + 38, bottom = y + ch - 8;
-			if (right <= left || bottom <= top) return;
+			Content const k = _content(i);
+			if (k.r <= k.l || k.b <= k.t) return;
 
-			for (int py = top; py < bottom; ++py) {
-				int const sy = (py - top) * sh / (bottom - top);
-				for (int px = left; px < right; ++px) {
-					int const sx = (px - left) * sw / (right - left);
+			for (int py = k.t; py < k.b; ++py) {
+				int const sy = (py - k.t) * sh / (k.b - k.t);
+				int xl, xr; _content_span(k, py, xl, xr);
+				for (int px = xl; px < xr; ++px) {
+					int const sx = (px - k.l) * sw / (k.r - k.l);
 					Pixel const &p = src[sy * sw + sx];
 					_set(px, py, uint8_t(p.r()), uint8_t(p.g()), uint8_t(p.b()));
 				}
@@ -1946,10 +1975,8 @@ namespace Hermos {
 		/* map a screen point into the hosted app's framebuffer coordinate space */
 		void _cell_point(int sx, int sy, int idx, Cell_session *h, int &ax, int &ay)
 		{
-			int const cw = _cell_w(idx), ch = _cell_h(idx);
-			int const x = _win_x(idx), y = _win_y(idx);
-			int const left = x + 14,  right = x + cw - 14;
-			int const top  = y + 38, bottom = y + ch - 8;
+			Content const k = _content(idx);
+			int const left = k.l, right = k.r, top = k.t, bottom = k.b;
 			int const sw = h->fb_w(), sh = h->fb_h();
 			if (right <= left || bottom <= top || sw <= 0 || sh <= 0) { ax = ay = 0; return; }
 			int const cx = sx < left ? left : (sx >= right ? right - 1 : sx);
