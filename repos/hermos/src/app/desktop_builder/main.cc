@@ -570,6 +570,8 @@ namespace Hermos {
 		Genode::String<16> _data_label { };      /* "ahci1", "nvme0", ... empty = none */
 		Genode::String<64> _data_model { };
 		unsigned           _data_part  { 0 };
+		bool               _data_hold  { false };  /* data services released while the installer writes disks */
+		uint64_t           _install_go_ms { 0 };   /* installer waits until the data services are gone */
 		uint64_t           _data_bytes { 0 };
 
 		void _scan_data_partition()
@@ -2335,7 +2337,7 @@ namespace Hermos {
 		/* the persistent data partition is served only while some app can use it */
 		bool _data_mounted() const
 		{
-			if (!_data_part) return false;
+			if (!_data_part || _data_hold) return false;
 			for (int i = 0; i < MAX_APPS; ++i) if (_app_kind[i] != APP_NONE) return true;
 			return false;
 		}
@@ -2624,9 +2626,31 @@ namespace Hermos {
 		return (uint32_t)(days * 86400 + t.hour * 3600 + t.minute * 60 + t.second);
 	}
 
+	/* release /home first: the installer must be the only writer of the disks */
 	void _install_start()
 	{
 		_inst_error = "";
+		if (_data_mounted()) {
+			_data_hold = true;
+			_emit_apps_config();
+			_install_go_ms = _timer.elapsed_ms() + 4000;
+			_install_phase = INST_FORMATTING; _install_pct = 0;
+			log("HermOS installer: data services released, install begins when they have stopped");
+			return;
+		}
+		_install_begin();
+	}
+
+	void _install_release_data_hold()
+	{
+		if (!_data_hold) return;
+		_data_hold = false;
+		_emit_apps_config();
+		log("HermOS installer: data services restored");
+	}
+
+	void _install_begin()
+	{
 		uint32_t const now = _unix_now();
 		uint64_t const seed = ((uint64_t)_timer.elapsed_ms() << 32) ^ now ^ ((uint64_t)(uintptr_t)this >> 4);
 		Installer::Params p { _system_img.local_addr<uint8_t>(), _system_img.size(),
@@ -2636,6 +2660,7 @@ namespace Hermos {
 			_inst_error = _job->error();
 			_install_phase = INST_FAILED; _installer_step = 3;
 			log("HermOS installer: cannot start: ", _job->error());
+			_install_release_data_hold();
 			return;
 		}
 		_install_phase = INST_FORMATTING;
@@ -2646,6 +2671,10 @@ namespace Hermos {
 	/* one slice of work per timer tick, so the UI keeps showing progress */
 	void _install_tick()
 	{
+		if (_install_go_ms && _timer.elapsed_ms() >= _install_go_ms) {
+			_install_go_ms = 0;
+			_install_begin();
+		}
 		if (!_job.constructed()) return;
 		for (int i = 0; i < 4; ++i) if (!_job->step()) break;
 		_install_pct = _job->percent();
@@ -2660,6 +2689,7 @@ namespace Hermos {
 			_inst_error = _job->error();
 			_install_phase = INST_FAILED; _installer_step = 3;
 			log("HermOS installer: FAILED: ", _job->error());
+			_install_release_data_hold();
 			break;
 		case Phase::WIPE: case Phase::BOOT: _install_phase = INST_FORMATTING; break;
 		case Phase::DATA:                   _install_phase = INST_COPYING;    break;

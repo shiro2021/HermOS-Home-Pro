@@ -108,6 +108,7 @@ function carries one of these marks:
 | Install: `HERMOS-DATA` ext2 partition (1 MiB aligned) | VERIFIED | `e2fsck` clean, 1 GB to 512 GB disks. |
 | Install: read-back verification | VERIFIED | It caught an NVMe truncation bug. |
 | Refuses an image without a real payload | VERIFIED | |
+| Installer releases the mounted `/home` first | VERIFIED | Data services stop, install runs, `/home` is restored if the install fails. Tested with `/home` mounted: install verified, other data disk byte-identical. |
 | Reboot after install | BUILT | |
 | Use of the data partition | PARTIAL | Terminal `/home` is mounted from it (tested live, QEMU). Files app and an installed-disk boot test are still to do. |
 | Persistent user files, settings, installed apps | ABSENT | The installed OS runs from RAM like the live one. |
