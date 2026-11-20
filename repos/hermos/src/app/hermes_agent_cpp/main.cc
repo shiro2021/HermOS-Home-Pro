@@ -30,6 +30,8 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
+#include "shiro_rag.h"
+
 namespace {
 
 	std::string read_file(char const *path)
@@ -137,6 +139,40 @@ namespace {
 		close(c);
 	}
 
+	/* ---- Shiro Local Brain: BM25 index over the HermOS corpus ---- */
+	static shiro_rag::Index g_index;
+	static bool            g_indexed = false;
+
+	static void build_index()
+	{
+		std::string corpus = read_file("/corpus/shiro_corpus.txt");
+		if (corpus.empty()) {
+			printf("Shiro: no corpus at /corpus/shiro_corpus.txt\n");
+			return;
+		}
+		g_index.add(corpus);
+		g_indexed = true;
+		printf("Shiro: indexed corpus (%zu chunks)\n", g_index.size());
+	}
+
+	/* prepend the top-k retrieved chunks as context for the LLM */
+	static std::string augment_prompt(std::string const &prompt)
+	{
+		if (!g_indexed) return prompt;
+		auto const hits = g_index.search(prompt, 3);
+		if (hits.empty()) return prompt;
+
+		std::string ctx = "Context (from the HermOS docs/codebase):\n";
+		for (auto const &h : hits) {
+			ctx += "- ";
+			ctx += g_index.chunk(h.first);
+			ctx += "\n";
+		}
+		ctx += "\nUsing the context above, answer the user's question: ";
+		ctx += prompt;
+		return ctx;
+	}
+
 } /* anonymous namespace */
 
 
@@ -149,6 +185,7 @@ void Libc::Component::construct(Libc::Env &env)
 		printf("HermOS hermes_agent_cpp: waiting for ui_intent...\n");
 
 		httpd_init();
+		build_index();
 
 		std::string last_intent;
 		bool        waiting = false;
@@ -166,8 +203,10 @@ void Libc::Component::construct(Libc::Env &env)
 				std::string const prompt = extract_prompt(xml);
 				printf("HermOS: prompt received: [%s]\n", prompt.c_str());
 
-				/* forward to the MyKee router */
-				write_file("/mykee/mykee_request", prompt);
+				/* augment with retrieved context, then forward to the router */
+				std::string const aug = augment_prompt(prompt);
+				printf("Shiro: context-augmented prompt (%zu bytes)\n", aug.size());
+				write_file("/mykee/mykee_request", aug);
 				waiting = true;
 			}
 

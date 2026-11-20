@@ -1,5 +1,5 @@
 TARGET = hermes_agent_cpp
-LIBS   = base libc stdcxx
+LIBS   = base libc stdcxx libm
 SRC_CC = main.cc
 
 # libc's <sys/types.h> (pulled in by <unistd.h>/<string>) triggers

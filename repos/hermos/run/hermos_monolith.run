@@ -213,6 +213,8 @@ config
       + dir mykee
         + report | name: mykee_request | label: mykee_request | buffer: 4096
         + rom | name: mykee_response | label: mykee_response | binary: no
+      + dir corpus
+        + rom | name: shiro_corpus.txt | binary: no
 
 + start mykee_router | caps: 1500 | ram: 64M
   + binary mykee_router
@@ -449,8 +451,9 @@ exec cp $asset_dir/apps.registry bin/registry
 exec cp $asset_dir/files_menu.xml bin/files_menu
 exec cp [genode_dir]/repos/hermos/src/app/theme_engine/theme.hid bin/theme.hid
 exec cp [genode_dir]/repos/hermos/run/mykee.key bin/mykee.key
+exec sh -c "cat [genode_dir]/repos/hermos/doc/*.md > bin/shiro_corpus.txt"
 
-set boot_modules [list {*}[build_artifacts] hermos_drivers.config hermos_terminal.config Roboto-Regular.ttf Inter-Regular.ttf Inter-Medium.ttf Inter-SemiBold.ttf compass.png hydro_thumb.png hydro_big.png icon_search.png icon_folder.png icon_mic.png icon_user.png icon_terminal.png icon_close.png icon_minimize.png icon_pause.png wallpaper.png logo.png icon_leaf.png registry files_menu menu_view_style.tar theme.hid mykee.key hermos-system.img]
+set boot_modules [list {*}[build_artifacts] hermos_drivers.config hermos_terminal.config Roboto-Regular.ttf Inter-Regular.ttf Inter-Medium.ttf Inter-SemiBold.ttf compass.png hydro_thumb.png hydro_big.png icon_search.png icon_folder.png icon_mic.png icon_user.png icon_terminal.png icon_close.png icon_minimize.png icon_pause.png wallpaper.png logo.png icon_leaf.png registry files_menu menu_view_style.tar theme.hid mykee.key shiro_corpus.txt hermos-system.img]
 build_boot_image $boot_modules
 
 if {[cmd_arg --hermos-build-only no] eq "yes"} {
