@@ -127,6 +127,17 @@ inline Png_rgb load_png_rgb(void const *png_data, size_t png_size)
 	return out;
 }
 
+/* decode a PNG to straight RGBA8; caller frees with stbi_image_free() */
+struct Png_rgba { unsigned char *px; int w; int h; };
+
+inline Png_rgba load_png_rgba(void const *png_data, size_t png_size)
+{
+	Png_rgba out { nullptr, 0, 0 };
+	out.px = stbi_load_from_memory((unsigned char const *)png_data,
+	                               (int)png_size, &out.w, &out.h, nullptr, 4);
+	return out;
+}
+
 } /* namespace Hermos */
 
 #endif /* _HERMOS_PNG_RENDERER_H_ */

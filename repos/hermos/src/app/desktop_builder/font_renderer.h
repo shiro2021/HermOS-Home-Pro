@@ -8,32 +8,10 @@
 #ifndef _HERMOS_FONT_RENDERER_H_
 #define _HERMOS_FONT_RENDERER_H_
 
-#define STB_TRUETYPE_IMPLEMENTATION
-#include <stddef.h>   /* size_t + NULL (compiler freestanding header, no libc) */
-/* The desktop no longer links libc, so stb_truetype's C-library dependencies
- * (math.h, stdlib.h, string.h, assert.h) are provided natively. The sqrt/cos/
- * fabs etc. still resolve against libm, which remains linked. */
-#define STBTT_ifloor(x)   ((int)(x))
-#define STBTT_iceil(x)    ((int)(x) + (((x) > (int)(x)) ? 1 : 0))
-#define STBTT_sqrt(x)     __builtin_sqrtf(x)
-#define STBTT_pow(x,y)    __builtin_powf(x,y)
-#define STBTT_fmod(x,y)   __builtin_fmodf(x,y)
-#define STBTT_cos(x)      __builtin_cosf(x)
-#define STBTT_acos(x)     __builtin_acosf(x)
-#define STBTT_fabs(x)     __builtin_fabsf(x)
-#define STBTT_strlen(x)   Genode::strlen(x)
-#define STBTT_memcpy      Genode::memcpy
-inline void *_stbtt_memset(void *s, int c, size_t n)
-{
-	unsigned char *p = (unsigned char *)s;
-	while (n--) *p++ = (unsigned char)c;
-	return s;
-}
-#define STBTT_memset      _stbtt_memset
-#define STBTT_assert(x)   ((void)0)
-#define STBTT_malloc(x,u) ((void)(u), nullptr)
-#define STBTT_free(x,u)   ((void)(u), (void)(x))
-#include <stb_truetype.h>
+/* stb_truetype (implementation + allocator) lives in scene_gfx.h. Its
+ * STBTT_malloc is an arena allocator; the old nullptr allocator left every
+ * glyph bitmap unwritten, which showed up as scrambled text. */
+#include "scene_gfx.h"
 
 #include <os/surface.h>
 #include <util/color.h>
@@ -128,6 +106,8 @@ class FontRenderer
 				int const gw = x1 - x0, gh = y1 - y0;
 
 				if (gw > 0 && gh > 0 && gw <= 128 && gh <= 128) {
+					Scene::text_arena().reset();
+					for (int i = 0; i < gw * gh; ++i) bitmap[i] = 0;
 					stbtt_MakeCodepointBitmap(&_info, bitmap, gw, gh, gw, scale, scale, cp);
 					_blit_glyph(base, W, H, pen_x + x0, baseline + y0, gw, gh, bitmap, c);
 				}

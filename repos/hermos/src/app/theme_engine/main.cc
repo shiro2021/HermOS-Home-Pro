@@ -47,6 +47,15 @@ namespace Theme {
 
 		int  _sb_x { 0 }, _sb_y { 0 }, _sb_w { 0 }, _sb_h { 0 };
 
+		/* geometry unit: values are fractions of the screen in 1/_scale
+		 * (100 = percent, the legacy unit; 10000 = 0.01 % steps) */
+		int  _scale { 100 };
+
+		/* Plasma-style panels */
+		char _pl_mode[16] { "autohide" };
+		char _pb_mode[16] { "visible" };
+		int  _pl_size { 78 }, _pb_size { 28 };
+
 		/* Step 3: the normalized snap slots (quick tiling) */
 		enum { MAX_SNAPS = 4 };
 		struct Snap { char id[16]; int x, w; };
@@ -116,7 +125,7 @@ namespace Theme {
 		/* parse the HID: "+"-indented tree with "key: value" lines */
 		void _parse(char const *buf, size_t len)
 		{
-			enum Sect { SECT_NONE, SECT_CELL, SECT_SIDEBAR, SECT_ICONS, SECT_SNAP } sect = SECT_NONE;
+			enum Sect { SECT_NONE, SECT_CELL, SECT_SIDEBAR, SECT_ICONS, SECT_SNAP, SECT_PLEFT, SECT_PBOTTOM } sect = SECT_NONE;
 			Cell *cur = nullptr;
 			Snap *scur = nullptr;
 
@@ -158,6 +167,9 @@ namespace Theme {
 				                                               if (_snap_count < MAX_SNAPS)
 				                                                   { scur = &_snaps[_snap_count++]; scur->id[0] = 0; } }
 				else if (Genode::strcmp(word, "snaps") == 0) { sect = SECT_NONE;  cur = nullptr; scur = nullptr; }
+				else if (Genode::strcmp(word, "panels") == 0) { sect = SECT_NONE;  cur = nullptr; scur = nullptr; }
+				else if (Genode::strcmp(word, "left") == 0)   { sect = SECT_PLEFT;   cur = nullptr; scur = nullptr; }
+				else if (Genode::strcmp(word, "bottom") == 0) { sect = SECT_PBOTTOM; cur = nullptr; scur = nullptr; }
 					continue;
 				}
 
@@ -179,7 +191,13 @@ namespace Theme {
 				int val = 0;
 				while (vs < le && *vs >= '0' && *vs <= '9') { val = val * 10 + (*vs - '0'); ++vs; }
 
-				if (Genode::strcmp(key, "id") == 0 && sect == SECT_CELL && cur) {
+				if (Genode::strcmp(key, "scale") == 0) {
+					if (val >= 100) _scale = val;
+				} else if (Genode::strcmp(key, "mode") == 0 && (sect == SECT_PLEFT || sect == SECT_PBOTTOM)) {
+					_copy_val(sect == SECT_PLEFT ? _pl_mode : _pb_mode, val_start, le);
+				} else if (Genode::strcmp(key, "size") == 0 && (sect == SECT_PLEFT || sect == SECT_PBOTTOM)) {
+					(sect == SECT_PLEFT ? _pl_size : _pb_size) = val;
+				} else if (Genode::strcmp(key, "id") == 0 && sect == SECT_CELL && cur) {
 					size_t const il = (size_t)(le - val_start);
 					size_t const icp = il < 15 ? il : 15;
 					Genode::memcpy(cur->id, val_start, icp);
@@ -255,10 +273,10 @@ namespace Theme {
 						for (int i = 0; i < _cell_count; ++i) {
 							Cell const &c = _cells[i];
 
-							int abs_x = c.x * _screen_w / 100;
-							int abs_y = c.y * _screen_h / 100;
-							int abs_w = c.w * _screen_w / 100;
-							int abs_h = c.h * _screen_h / 100;
+							int abs_x = c.x * _screen_w / _scale;
+							int abs_y = c.y * _screen_h / _scale;
+							int abs_w = c.w * _screen_w / _scale;
+							int abs_h = c.h * _screen_h / _scale;
 
 							/* the chamfer stays a PERCENTAGE: the desktop computes
 							 * chamfer_px = pct * min(w, h) / 100 live per frame so it
@@ -274,10 +292,14 @@ namespace Theme {
 						}
 					});
 					xml.node("sidebar", [&] () {
-						xml.attribute("x", _sb_x * _screen_w / 100);
-						xml.attribute("y", _sb_y * _screen_h / 100);
-						xml.attribute("w", _sb_w * _screen_w / 100);
-						xml.attribute("h", _sb_h * _screen_h / 100);
+						xml.attribute("x", _sb_x * _screen_w / _scale);
+						xml.attribute("y", _sb_y * _screen_h / _scale);
+						xml.attribute("w", _sb_w * _screen_w / _scale);
+						xml.attribute("h", _sb_h * _screen_h / _scale);
+					});
+					xml.node("panels", [&] () {
+						xml.node("left",   [&] () { xml.attribute("mode", _pl_mode); xml.attribute("size", _pl_size); });
+						xml.node("bottom", [&] () { xml.attribute("mode", _pb_mode); xml.attribute("size", _pb_size); });
 					});
 					xml.node("snaps", [&] () {
 						for (int i = 0; i < _snap_count; ++i) {
@@ -293,10 +315,10 @@ namespace Theme {
 			});
 
 			log("Theme state published (", _screen_w, "x", _screen_h, "):",
-			    " cell0=", _cells[0].x * _screen_w / 100, ",",
-			    _cells[0].y * _screen_h / 100,
+			    " cell0=", _cells[0].x * _screen_w / _scale, ",",
+			    _cells[0].y * _screen_h / _scale,
 			    " chamfer_pct=", _cells[0].chamfer,
-			    " sidebar=", _sb_x * _screen_w / 100, ",", _sb_y * _screen_h / 100);
+			    " sidebar=", _sb_x * _screen_w / _scale, ",", _sb_y * _screen_h / _scale);
 		}
 	};
 }

@@ -37,6 +37,7 @@
 #include <hermos_ui/window_geometry.h>
 #include <hermos_ui/cell_session.h>
 
+#include "scene.h"
 #include "font_renderer.h"
 #include "png_renderer.h"
 
@@ -412,6 +413,18 @@ namespace Hermos {
 		 * scaled to the screen at boot. Kept pristine in this buffer so the
 		 * glassmorphism blur can sample the untouched wallpaper behind cells. */
 		uint8_t *_wall_rgb { nullptr };   /* _w * _h * 3 bytes */
+
+		/* ---- the immediate-mode scene (see scene.h) ---- */
+		Scene::Fonts  _sfonts  { };
+		Scene::Assets _sassets { };
+		Scene::State  _sstate  { };
+		Scene::Hits   _shits   { };
+		uint32_t     *_scene_px   { nullptr };   /* cached composed frame */
+		bool          _scene_ready { false };
+		bool          _scene_valid { false };
+		unsigned      _scene_hash  { 0 };
+		Genode::String<48> _sclock { };
+		unsigned long _last_tick_ms { 0 };
 
 		void _draw_icon(char const *name, int cx, int cy)
 		{
@@ -3445,6 +3458,8 @@ namespace Hermos {
 
 	void _render()
 		{
+			if (_scene_ready && !_server_mode) { _render_scene(); return; }
+
 			_blit_wallpaper();
 
 			Surface<Pixel> surface(_px, Area(unsigned(_w), unsigned(_h)));
@@ -3724,7 +3739,63 @@ namespace Hermos {
 			_drag_edge = 0;
 		}
 
+		void _click_cells(int x, int y)
+		{
+			/* hit-test cells top-down (reverse z-order): focus / move / resize */
+			for (int oi = NUM_CELLS - 1; oi >= 0; --oi) {
+				int const i = _draw_order[oi];
+				if (!_in_cell(i, x, y)) continue;
+
+				_bring_to_front(i);
+				_gui_root.cells().focus(i);
+
+				/* Step 2: the focused slot becomes ACTIVE (unless paused);
+				 * the previously-active slot falls back to INACTIVE */
+				if (_cell_state[i] != CELL_PAUSED) {
+					for (int j = 0; j < NUM_CELLS; ++j)
+						if (j != i && _cell_state[j] == CELL_ACTIVE)
+							_cell_state[j] = CELL_INACTIVE;
+					_cell_state[i] = CELL_ACTIVE;
+				}
+
+				int const edge = _edge_at(i, x, y);
+				if (edge != 0) {
+					/* edge/corner -> resize */
+					_drag_mode = DRAG_RESIZE;
+					_drag_cell = i;
+					_drag_edge = edge;
+					_drag_sx = x;
+					_drag_sy = y;
+					_drag_orig = _geom[i];
+					log("HermOS: resizing cell ", i, " (edge ", edge, ")");
+				} else if (y < _geom[i].y + 30) {
+					/* title bar -> drag move */
+					_drag_mode = DRAG_MOVE;
+					_drag_cell = i;
+					_drag_off_x = x - _geom[i].x;
+					_drag_off_y = y - _geom[i].y;
+					log("HermOS: dragging cell ", i);
+				} else {
+					log("HermOS cell ", i, " focused (body)");
+				}
+				_dirty = true;
+				return;
+			}
+		
+		}
+
 		void _click(int x, int y)
+		{
+			if (_installer_mode) { _installer_click(x, y); return; }
+			if (_scene_ready) {
+				if (_scene_click(x, y)) return;
+				_click_cells(x, y);
+				return;
+			}
+			_click_legacy(x, y);
+		}
+
+		void _click_legacy(int x, int y)
 		{
 			if (_installer_mode) { _installer_click(x, y); return; }
 
@@ -3869,6 +3940,218 @@ namespace Hermos {
 			}
 		}
 
+		/* ================= immediate-mode scene glue ================= */
+
+		static char const *_weekday_name(int y, int m, int d)
+		{
+			static char const *n[7] = { "Sun","Mon","Tue","Wed","Thu","Fri","Sat" };
+			static int const t[12] = { 0,3,2,5,0,3,5,1,4,6,2,4 };
+			if (m < 3) y -= 1;
+			return n[(y + y/4 - y/100 + y/400 + t[(m - 1) % 12] + d) % 7];
+		}
+
+		char const *_scene_clock()
+		{
+			if (_rtc.constructed()) {
+				Rtc::Timestamp const ts = _rtc->current_time();
+				_sclock = Genode::String<48>(
+					_weekday_name((int)ts.year, (int)ts.month, (int)ts.day), " ",
+					(ts.day < 10 ? "0" : ""), ts.day, " ", _month_name(ts.month), " ", ts.year, " ",
+					(ts.hour < 10 ? "0" : ""), ts.hour, ":", (ts.minute < 10 ? "0" : ""), ts.minute);
+			} else {
+				_sclock = Genode::String<48>("-- --- ---- --:--");
+			}
+			return _sclock.string();
+		}
+
+		/* load one PNG from /assets as straight RGBA (kept alive for the scene) */
+		bool _scene_load_image(char const *path, Scene::Image &out)
+		{
+			void *data = nullptr; size_t size = 0;
+			if (!_read_file(_vfs, path, _asset_heap, data, size)) return false;
+			Png_rgba const img = load_png_rgba(data, size);
+			if (!img.px || img.w <= 0 || img.h <= 0) return false;
+			out = Scene::Image { img.px, img.w, img.h };
+			return true;
+		}
+
+		bool _scene_load_font(char const *path, Scene::Font &out)
+		{
+			void *data = nullptr; size_t size = 0;
+			if (!_read_file(_vfs, path, _asset_heap, data, size)) return false;
+			return out.load(data);
+		}
+
+		void _init_scene()
+		{
+			bool ok = true;
+			ok &= _scene_load_font("/assets/Inter-Regular.ttf",  _sfonts.reg);
+			ok &= _scene_load_font("/assets/Inter-Medium.ttf",   _sfonts.med);
+			ok &= _scene_load_font("/assets/Inter-SemiBold.ttf", _sfonts.semi);
+			ok &= _scene_load_image("/assets/wallpaper.png",     _sassets.wall);
+			ok &= _scene_load_image("/assets/compass.png",       _sassets.compass);
+			ok &= _scene_load_image("/assets/hydro_thumb.png",   _sassets.hydro_thumb);
+			ok &= _scene_load_image("/assets/hydro_big.png",     _sassets.hydro_big);
+			_scene_px = (uint32_t *)_asset_heap.alloc(size_t(_w) * size_t(_h) * 4);
+			_scene_ready = ok && _scene_px != nullptr;
+			log("HermOS scene: ", _scene_ready ? "ready (immediate-mode desktop)"
+			                                   : "assets missing, using the legacy renderer");
+		}
+
+		void _sync_scene()
+		{
+			Scene::State &st = _sstate;
+			st.cw = _w; st.ch = _h;
+			st.clock       = _scene_clock();
+			st.prompt      = _prompt_len ? _prompt : nullptr;
+			st.search_focus = _bar_focused;
+			st.active_win  = _focus_idx();
+			for (int i = 0; i < NUM_CELLS; ++i) {
+				st.win[i]       = { float(_win_x(i)), float(_win_y(i)), float(_cell_w(i)), float(_cell_h(i)) };
+				st.win_open[i]  = _win_open[i];
+				st.win_hosted[i] = _gui_root.cells().at(i) != nullptr;
+			}
+			for (int oi = 0; oi < NUM_CELLS; ++oi) st.order[oi] = _draw_order[oi];
+		}
+
+		unsigned _scene_state_hash() const
+		{
+			unsigned h = 2166136261u;
+			auto mix = [&] (unsigned v) { h = (h ^ v) * 16777619u; };
+			Scene::State const &st = _sstate;
+			for (int i = 0; i < 6; ++i) {
+				mix(unsigned(st.win[i].x)); mix(unsigned(st.win[i].y)); mix(unsigned(st.win[i].w)); mix(unsigned(st.win[i].h));
+				mix(st.win_open[i]); mix(st.win_hosted[i]); mix(unsigned(st.order[i]));
+			}
+			mix(unsigned(st.active_win)); mix(st.search_focus);
+			for (char const *c = st.clock; c && *c; ++c) mix(unsigned(*c));
+			for (char const *c = st.prompt; c && *c; ++c) mix(unsigned(*c));
+			return h;
+		}
+
+		void _render_scene()
+		{
+			_sync_scene();
+			unsigned const hsh = _scene_state_hash();
+			if (!_scene_valid || hsh != _scene_hash) {
+				Scene::Canvas c { _scene_px, _w, _h };
+				Scene::render_base(c, _sfonts, _sassets, _sstate);
+				_scene_hash = hsh; _scene_valid = true;
+			}
+			Genode::memcpy(_px, _scene_px, size_t(_w) * size_t(_h) * 4);
+			{
+				/* the hideable panels are redrawn every frame (cheap) */
+				Scene::Canvas c { (uint32_t *)_px, _w, _h };
+				Scene::render_panels(c, _sfonts, _sassets, _sstate, _shits);
+			}
+
+			/* hosted apps draw over their window frame */
+			for (int oi = 0; oi < NUM_CELLS; ++oi) {
+				int const i = _draw_order[oi];
+				if (!_win_open[i]) continue;
+				Cell_session *hosted = _gui_root.cells().at(i);
+				if (hosted) _blit_cell(i, hosted);
+			}
+
+			Surface<Pixel> surface(_px, Area(unsigned(_w), unsigned(_h)));
+			if (_installer_mode) draw_installer(surface);
+			_draw_ai_response(surface);
+			_cursor();
+			_fb.refresh(Rect(Point(0, 0), _fb.mode().area));
+		}
+
+		/* hover-reveal of the hideable panels (Plasma auto-hide semantics) */
+		void _scene_pointer()
+		{
+			Scene::Map const m = Scene::map_for(_w, _h);
+			int const px = _pointer_x, py = _pointer_y;
+			bool const lv = _sstate.left.visible(), bv = _sstate.bottom.visible();
+			_sstate.left.hovering   = m.hit(_shits.left_grip, px, py)   || (lv && m.hit(_shits.left_panel, px, py));
+			_sstate.bottom.hovering = m.hit(_shits.bottom_grip, px, py) || (bv && m.hit(Scene::TASKBAR_RECT, px, py));
+		}
+
+		/* returns true when the click was consumed by the scene chrome */
+		bool _scene_click(int x, int y)
+		{
+			Scene::Map const m = Scene::map_for(_w, _h);
+
+			/* window control buttons, topmost window under the pointer first */
+			for (int oi = NUM_CELLS - 1; oi >= 0; --oi) {
+				int const idx = _draw_order[oi];
+				if (!_win_open[idx] || !_in_cell(idx, x, y)) continue;
+				Scene::Ctrls const c = Scene::window_ctrls(idx,
+					{ float(_win_x(idx)), float(_win_y(idx)), float(_cell_w(idx)), float(_cell_h(idx)) });
+				for (int k = 0; k < 4; ++k) {
+					if (!c.has[k]) continue;
+					float const dx = float(x) - c.x[k], dy = float(y) - c.y;
+					if (dx * dx + dy * dy > c.r * c.r * 1.8f) continue;
+					if (k == Scene::CTRL_CLOSE) {
+						_win_open[idx] = false;
+						_gui_root.close_cell(idx);
+						_close_app(idx);
+						log("HermOS cell ", idx, " closed: session destroyed, quota returned");
+					} else if (k == Scene::CTRL_MIN) {
+						_win_open[idx] = false;
+						log("HermOS cell ", idx, " minimized");
+					} else if (k == Scene::CTRL_MAX) {
+						/* Plasma clientArea(): the screen minus the struts of the
+						 * panels that are permanently shown, and the sidebar */
+						Scene::Rect const area = Scene::client_area(
+							{ 0, 0, float(_w), float(_h) },
+							{ Scene::Edge::Left,   _sstate.left.mode,   _sstate.left.thickness * m.k,   _sstate.left.t,   _sstate.left.pinned,   false },
+							{ Scene::Edge::Bottom, _sstate.bottom.mode, _sstate.bottom.thickness * m.k, _sstate.bottom.t, _sstate.bottom.pinned, false });
+						Cell_geom &g = _geom[idx];
+						g.x = int(area.x); g.y = int(area.y);
+						g.w = int(area.w) - _sb_w; g.h = int(area.h) - _dock_y_offset;
+						log("HermOS cell ", idx, " maximized (client area)");
+					} else {   /* undo: back to the theme slot */
+						log("HermOS cell ", idx, " restore");
+						_handle_theme();
+					}
+					_dirty = true;
+					return true;
+				}
+				break;
+			}
+
+			/* the left launcher dock */
+			if (_sstate.left.visible()) {
+				for (int k = 0; k < _shits.launcher_count; ++k) {
+					if (!m.hit(_shits.launcher[k], x, y)) continue;
+					switch (k) {
+					case 0: _launch_app(APP_FILES);    break;
+					case 1: _launch_app(APP_TERMINAL); break;
+					case 2: _launch_app(APP_TESTNIT);  break;
+					default:
+						_installer_mode = true; _installer_step = 0;
+						log("HermOS: launching installer");
+						break;
+					}
+					_dirty = true;
+					return true;
+				}
+			}
+
+			/* grips: click a hidden panel's tab to show it */
+			if (!_sstate.left.visible() && m.hit(_shits.left_grip, x, y))     { _sstate.left.toggle();   _dirty = true; return true; }
+			if (!_sstate.bottom.visible() && m.hit(_shits.bottom_grip, x, y)) { _sstate.bottom.toggle(); _dirty = true; return true; }
+
+			/* taskbar: the HermOS button restores minimised windows; the chevron hides the bar */
+			if (_sstate.bottom.visible() && m.hit(Scene::TASKBAR_RECT, x, y)) {
+				if (x < int(m.X(110))) { for (int i = 0; i < NUM_CELLS; ++i) _win_open[i] = true; _dirty = true; return true; }
+				if (x >= int(m.X(380)) && x < int(m.X(710))) { _sstate.bottom.toggle(); _dirty = true; return true; }
+			}
+
+			/* the single search field */
+			if (m.hit(Scene::SEARCH_RECT, x, y)) {
+				_bar_focused = true; _dirty = true;
+				log("HermOS search field focused");
+				return true;
+			}
+			if (_bar_focused) { _bar_focused = false; _dirty = true; }
+			return false;
+		}
+
 		void _handle_render()
 		{
 			_render();
@@ -3882,9 +4165,23 @@ namespace Hermos {
 				_render();
 				_dirty = false;
 			} else {
-				/* re-render while the bottom panel is mid-slide */
-				int const target = _bottom_panel_visible ? (_h - _panel_h) : _h;
-				if (_panel_y != target) { _render(); _dirty = false; }
+				if (_scene_ready) {
+					/* Plasma-style panel reveal animation */
+					/* advance by the real elapsed time, not by the tick count, so the
+					 * reveal always takes ~240 ms however slow the frames are */
+					unsigned long const now = _timer.elapsed_ms();
+					float dt = _last_tick_ms ? float(now - _last_tick_ms) : 16.0f;
+					_last_tick_ms = now;
+					if (dt > 250.0f) dt = 250.0f;
+					if (dt < 1.0f)   dt = 1.0f;
+					bool moved = _sstate.left.update(dt);
+					moved = _sstate.bottom.update(dt) || moved;
+					if (moved) { _render(); _dirty = false; }
+				} else {
+					/* re-render while the bottom panel is mid-slide */
+					int const target = _bottom_panel_visible ? (_h - _panel_h) : _h;
+					if (_panel_y != target) { _render(); _dirty = false; }
+				}
 			}
 			_timer.trigger_once(16 * 1000);   /* re-arm the next tick */
 		}
@@ -3978,6 +4275,21 @@ namespace Hermos {
 					_sb_h = (int)sb.attribute_value("h", (unsigned long)_sb_h);
 				});
 
+				/* Plasma-style panels: visibility mode + thickness (design px) */
+				theme.with_optional_sub_node("panels", [&] (Xml_node const &panels) {
+					auto apply = [&] (Scene::Panel &pn, Xml_node const &n) {
+						String<16> const m = n.attribute_value("mode", String<16>("visible"));
+						if      (m == "hidden")   pn.mode = Scene::Visibility::Hidden;
+						else if (m == "autohide") pn.mode = Scene::Visibility::AutoHide;
+						else                      pn.mode = Scene::Visibility::AlwaysVisible;
+						pn.thickness = float(n.attribute_value("size", (unsigned long)pn.thickness));
+					};
+					panels.with_optional_sub_node("left",   [&] (Xml_node const &n) { apply(_sstate.left,   n); });
+					panels.with_optional_sub_node("bottom", [&] (Xml_node const &n) { apply(_sstate.bottom, n); });
+					_sstate.left.t   = _sstate.left.wants_shown()   ? 1.0f : 0.0f;
+					_sstate.bottom.t = _sstate.bottom.wants_shown() ? 1.0f : 0.0f;
+				});
+
 				/* Step 3: the normalized snap slots (quick tiling) */
 				_snap_count = 0;
 				theme.with_optional_sub_node("snaps", [&] (Xml_node const &snaps) {
@@ -3996,7 +4308,9 @@ namespace Hermos {
 					});
 				});
 
-				_compute_grid();
+				/* the scene takes the exact slot rectangles from the theme;
+				 * only the legacy renderer uses the fixed 3x2 tile grid */
+				if (!_scene_ready) _compute_grid();
 
 			log("HermOS theme applied: sidebar=(", _sb_x, ",", _sb_y, " ", _sb_w, "x", _sb_h, ")");
 			log("HermOS theme applied: cell0=(", _geom[0].x, ",", _geom[0].y,
@@ -4110,7 +4424,8 @@ namespace Hermos {
 
 				/* bottom panel: show when the cursor reaches the bottom edge,
 				 * hide when it leaves the panel area */
-				if (_pointer_y >= _h - 10) _bottom_panel_visible = true;
+				if (_scene_ready) _scene_pointer();
+				else if (_pointer_y >= _h - 10) _bottom_panel_visible = true;
 				else if (_pointer_y < _h - _panel_h) _bottom_panel_visible = false;
 
 				ev.handle_release([&] (Input::Keycode key) {
@@ -4127,6 +4442,8 @@ namespace Hermos {
 					if (_meta_down) {
 						_meta_down = false;   /* consumed */
 						switch (key) {
+						case Input::KEY_L:        _sstate.left.toggle();   _dirty = true; return;
+						case Input::KEY_B:        _sstate.bottom.toggle(); _dirty = true; return;
 						case Input::KEY_T:        _toggle_tile();  return;
 						case Input::KEY_LEFT:     _quick_tile(0);  return;
 						case Input::KEY_RIGHT:    _quick_tile(1);  return;
@@ -4255,6 +4572,8 @@ namespace Hermos {
 			_pointer_x = _w / 2;
 			_pointer_y = _h / 2;
 
+			_init_scene();
+
 			/* read the wall clock (best-effort; the desktop still boots without it) */
 			try { _rtc.construct(_env); }
 			catch (...) { log("HermOS desktop_builder: RTC unavailable"); }
@@ -4355,5 +4674,8 @@ namespace Hermos {
 
 void Component::construct(Genode::Env &env)
 {
+	/* the scene's text arena is a global object */
+	env.exec_static_constructors();
+
 	static Hermos::Main main(env);
 }

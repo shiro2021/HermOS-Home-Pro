@@ -1,0 +1,814 @@
+/*
+ * HermOS desktop scene — the whole "Shiro" desktop drawn immediate-mode.
+ *
+ * Geometry follows KDE Plasma's panel model (edge, thickness, visibility mode,
+ * reveal animation with ease-out-cubic, client-area = work area minus the
+ * struts of visible panels). The layout is authored in a 1536x1024 design
+ * space and mapped to the real framebuffer by one uniform scale, so the
+ * desktop is resolution independent. Everything is drawn from analytic
+ * shapes (see scene_gfx.h); only the compass emblem, the hydroponics photo
+ * and the wallpaper are bitmaps.
+ */
+
+#ifndef _HERMOS_SCENE_H_
+#define _HERMOS_SCENE_H_
+
+#include "scene_gfx.h"
+
+namespace Scene {
+
+/* ---------------------------------------------------------------- palette */
+
+namespace Pal {
+	static constexpr Rgba white   { 241, 244, 247, 1.0f };
+	static constexpr Rgba text    { 226, 229, 233, 1.0f };
+	static constexpr Rgba muted   { 150, 156, 164, 1.0f };
+	static constexpr Rgba orange  { 255, 156, 48, 1.0f };
+	static constexpr Rgba orange2 { 232, 108, 26, 1.0f };
+	static constexpr Rgba peach   { 255, 190, 118, 1.0f };
+	static constexpr Rgba green   { 84, 214, 108, 1.0f };
+	static constexpr Rgba panel   { 11, 12, 14, 1.0f };
+	static constexpr Rgba glass   { 16, 17, 20, 1.0f };
+	static constexpr Rgba line    { 62, 60, 58, 1.0f };
+}
+
+/* -------------------------------------------- Plasma-style panel + clientArea */
+
+struct Rect { float x, y, w, h; };
+
+enum class Visibility { Hidden, AutoHide, AlwaysVisible };
+enum class Edge { Left, Bottom };
+
+static inline float ease_out_cubic(float t) { t = 1.0f - clampf(t, 0, 1); return 1.0f - t * t * t; }
+
+struct Panel
+{
+	Edge       edge;
+	Visibility mode;
+	float      thickness;     /* design px */
+	float      t { 0 };       /* 0 = hidden, 1 = fully shown (linear time) */
+	bool       pinned { false };    /* user pressed "show": overrides AutoHide */
+	bool       hovering { false };  /* pointer on the edge / over the panel   */
+
+	bool wants_shown() const
+	{
+		if (pinned) return true;
+		switch (mode) {
+		case Visibility::AlwaysVisible: return true;
+		case Visibility::AutoHide:      return hovering;
+		case Visibility::Hidden:        return false;
+		}
+		return false;
+	}
+
+	/* advance the reveal animation; returns true while it is still moving */
+	bool update(float dt_ms)
+	{
+		float const target = wants_shown() ? 1.0f : 0.0f;
+		float const step   = dt_ms / 240.0f;     /* Plasma's panel animation: ~240 ms */
+		float const prev   = t;
+		if (t < target) t = minf(t + step, target); else if (t > target) t = maxf(t - step, target);
+		return t != prev;
+	}
+
+	float shown() const { return ease_out_cubic(t); }   /* eased 0..1 */
+	bool  visible() const { return t > 0.001f; }
+	/* user toggle (Meta+L / Meta+B / clicking the grip): flip between a
+	 * permanently shown and a hidden panel */
+	void  toggle()
+	{
+		if (wants_shown()) { pinned = false; mode = Visibility::Hidden; }
+		else               { mode = Visibility::AlwaysVisible; }
+	}
+};
+
+/* Plasma "clientArea": the work area left after the struts of panels that are
+ * permanently visible (auto-hide / floating panels reserve no space). */
+static inline Rect client_area(Rect screen, Panel const &left, Panel const &bottom)
+{
+	Rect r = screen;
+	if (left.mode == Visibility::AlwaysVisible || left.pinned)     { r.x += left.thickness; r.w -= left.thickness; }
+	if (bottom.mode == Visibility::AlwaysVisible || bottom.pinned) { r.h -= bottom.thickness; }
+	return r;
+}
+
+/* --------------------------------------------------------- assets + fonts */
+
+struct Fonts  { Font reg, med, semi; };
+struct Assets { Image wall, compass, hydro_thumb, hydro_big; };
+
+struct WinRect { float x, y, w, h; };
+
+/* hit areas the desktop_builder uses for the panels */
+struct Hits
+{
+	Rect left_grip, bottom_grip, left_panel, bottom_panel;
+	Rect launcher[4];
+	int  launcher_count { 0 };
+};
+
+struct State
+{
+	int   cw { 1536 }, ch { 1024 };
+	Panel left   { Edge::Left,   Visibility::AutoHide,      78.0f };
+	Panel bottom { Edge::Bottom, Visibility::AlwaysVisible, 28.0f };
+
+	char const *clock   { "Tue 10 Dec 2024 07:42" };
+	char const *prompt  { nullptr };       /* user-typed text, null = placeholder */
+	int   active_win    { 0 };
+	bool  win_open[6]   { true, true, true, true, true, true };
+	WinRect win[6];                        /* pixel rects (already in canvas space) */
+	bool  win_hosted[6] { };               /* an app owns the content area       */
+	bool  search_focus  { false };
+	int   rail_active   { 0 };             /* Agents */
+	int   hover_win     { -1 };
+	int   order[6]      { 0, 1, 2, 3, 4, 5 };   /* z-order, bottom -> top */
+};
+
+/* design <-> canvas mapping (one uniform scale, letterboxed) */
+struct Map
+{
+	float k, ox, oy;
+	float X(float x) const { return ox + x * k; }
+	float Y(float y) const { return oy + y * k; }
+	bool  hit(Rect const &r, int px, int py) const
+	{ return float(px) >= X(r.x) && float(px) < X(r.x + r.w) && float(py) >= Y(r.y) && float(py) < Y(r.y + r.h); }
+};
+static inline Map map_for(int w, int h)
+{
+	float const k = minf(float(w) / 1536.0f, float(h) / 1024.0f);
+	return { k, (float(w) - 1536.0f * k) * 0.5f, (float(h) - 1024.0f * k) * 0.5f };
+}
+
+static constexpr Rect SEARCH_RECT  { 287, 297, 524, 54 };
+static constexpr Rect TASKBAR_RECT { 0, 511, 1090, 28 };
+
+/* -------------------------------------------------------------- the Ctx */
+
+struct Ctx
+{
+	Canvas &c; Fonts &f; Assets &a;
+	float k, ox, oy;                       /* design -> canvas */
+
+	float X(float x) const { return ox + x * k; }
+	float Y(float y) const { return oy + y * k; }
+	float L(float v) const { return v * k; }
+
+	/* text in design coordinates: (x,y) = top-left of the line box */
+	float text(Font &fo, float x, float y, float size, Rgba col, char const *s, float tr = 0, float bold = 0)
+	{ return draw_text(c, fo, X(x), Y(y), size * k, col, s, tr * k, bold) / k; }
+	float textc(Font &fo, float cx, float y, float size, Rgba col, char const *s, float tr = 0, float bold = 0)
+	{ return draw_text_center(c, fo, X(cx), Y(y), size * k, col, s, tr * k, bold) / k; }
+	float textr(Font &fo, float rx, float y, float size, Rgba col, char const *s, float tr = 0, float bold = 0)
+	{ return draw_text_right(c, fo, X(rx), Y(y), size * k, col, s, tr * k, bold) / k; }
+	float tw(Font &fo, float size, char const *s, float tr = 0) { return text_width(fo, size * k, s, tr * k) / k; }
+
+	void ln(float x0, float y0, float x1, float y1, float t, Rgba col) { line(c, X(x0), Y(y0), X(x1), Y(y1), t * k, col); }
+	void rr_fill(float x, float y, float w, float h, float r, Rgba col)
+	{ fill_rrect(c, X(x), Y(y), L(w), L(h), L(r), Solid { col }); }
+	template <class COL> void rr_fillg(float x, float y, float w, float h, float r, COL col)
+	{ fill_rrect(c, X(x), Y(y), L(w), L(h), L(r), col); }
+	void rr_stroke(float x, float y, float w, float h, float r, float t, Rgba col)
+	{ stroke_rrect(c, X(x), Y(y), L(w), L(h), L(r), L(t), Solid { col }); }
+	void disc(float x, float y, float r, Rgba col) { fill_circle(c, X(x), Y(y), L(r), col); }
+	void rng(float x, float y, float r, float t, Rgba col) { ring(c, X(x), Y(y), L(r), L(t), col); }
+	void arcs(float x, float y, float r, float a0, float a1, float t, Rgba col) { arc(c, X(x), Y(y), L(r), a0, a1, L(t), col); }
+};
+
+/* ------------------------------------------------------------------ icons */
+
+namespace Icon {
+
+/* all icons are drawn into a 24x24 design box centred at (cx,cy), scaled by s */
+
+static inline void gear(Ctx &g, float cx, float cy, float s, Rgba col, float t = 1.7f)
+{
+	g.rng(cx, cy, 7.2f * s, t * s, col);
+	g.rng(cx, cy, 2.8f * s, t * s, col);
+	for (int i = 0; i < 8; ++i) {
+		float const a = float(i) * PI_ / 4.0f;
+		g.ln(cx + cosf_(a) * 7.6f * s, cy + sinf_(a) * 7.6f * s, cx + cosf_(a) * 10.2f * s, cy + sinf_(a) * 10.2f * s, 2.6f * s, col);
+	}
+}
+static inline void folder(Ctx &g, float cx, float cy, float s, Rgba col, float t = 1.6f)
+{
+	Rect const r { cx - 10 * s, cy - 7 * s, 20 * s, 15 * s };
+	g.rr_stroke(r.x, r.y + 2.5f * s, r.w, r.h - 2.5f * s, 2.5f * s, t * s, col);
+	g.ln(r.x + 1.5f * s, r.y + 5.0f * s, r.x + 1.5f * s, r.y + 1.0f * s, t * s, col);
+	g.ln(r.x + 1.5f * s, r.y + 1.0f * s, r.x + 7.5f * s, r.y + 1.0f * s, t * s, col);
+	g.ln(r.x + 7.5f * s, r.y + 1.0f * s, r.x + 9.5f * s, r.y + 4.0f * s, t * s, col);
+	g.ln(r.x + 2.0f * s, r.y + 8.5f * s, r.x + r.w - 2.0f * s, r.y + 8.5f * s, t * s, col);
+}
+static inline void network(Ctx &g, float cx, float cy, float s, Rgba col, float t = 1.6f)
+{
+	g.arcs(cx, cy + 4 * s, 4.5f * s, -PI_ * 0.85f, -PI_ * 0.15f, t * s, col);
+	g.arcs(cx, cy + 4 * s, 8.0f * s, -PI_ * 0.85f, -PI_ * 0.15f, t * s, col);
+	g.arcs(cx, cy + 4 * s, 11.5f * s, -PI_ * 0.82f, -PI_ * 0.18f, t * s, col);
+	g.disc(cx, cy + 4 * s, 1.6f * s, col);
+}
+static inline void monitor(Ctx &g, float cx, float cy, float s, Rgba col, float t = 1.6f)
+{
+	g.rr_stroke(cx - 9 * s, cy - 8 * s, 18 * s, 13 * s, 2.0f * s, t * s, col);
+	g.ln(cx - 4 * s, cy + 9 * s, cx + 4 * s, cy + 9 * s, t * s, col);
+	g.ln(cx, cy + 5 * s, cx, cy + 9 * s, t * s, col);
+}
+static inline void devices(Ctx &g, float cx, float cy, float s, Rgba col, float t = 1.6f)
+{
+	g.rr_stroke(cx - 8 * s, cy - 9 * s, 16 * s, 18 * s, 3.0f * s, t * s, col);
+	g.rng(cx, cy - 1.5f * s, 2.6f * s, t * s, col);
+	g.arcs(cx, cy + 6.0f * s, 4.0f * s, PI_, 2 * PI_, t * s, col);
+}
+static inline void agents(Ctx &g, float cx, float cy, float s, Rgba col, float t = 1.8f)
+{
+	g.rng(cx, cy - 4.0f * s, 3.4f * s, t * s, col);
+	g.arcs(cx, cy + 9.0f * s, 8.0f * s, PI_ * 1.12f, PI_ * 1.88f, t * s, col);
+	g.rng(cx - 8.0f * s, cy - 1.0f * s, 2.4f * s, (t - 0.3f) * s, col);
+	g.rng(cx + 8.0f * s, cy - 1.0f * s, 2.4f * s, (t - 0.3f) * s, col);
+}
+static inline void user(Ctx &g, float cx, float cy, float s, Rgba col, float t = 1.7f)
+{
+	g.rng(cx, cy - 4.0f * s, 3.8f * s, t * s, col);
+	g.arcs(cx, cy + 10.0f * s, 8.5f * s, PI_ * 1.15f, PI_ * 1.85f, t * s, col);
+}
+static inline void leaf(Ctx &g, float cx, float cy, float s, Rgba col)
+{
+	/* two-lobed leaf: fill a rotated lens + a vein */
+	Poly p; p.n = 0;
+	p.add(cx - 9 * s, cy + 9 * s); p.add(cx - 8 * s, cy - 1 * s); p.add(cx - 2 * s, cy - 8 * s);
+	p.add(cx + 9 * s, cy - 10 * s); p.add(cx + 10 * s, cy - 1 * s); p.add(cx + 4 * s, cy + 6 * s);
+	p.add(cx - 3 * s, cy + 9 * s);
+	/* non-convex-safe: draw as a thick polyline lens instead */
+	(void)p;
+	for (int i = 0; i <= 14; ++i) {
+		float const u = float(i) / 14.0f;
+		float const wdt = 1.0f - fabsf_(2 * u - 1);
+		float const x = lerpf(cx - 7.5f * s, cx + 8.0f * s, u), y = lerpf(cy + 8.0f * s, cy - 8.5f * s, u);
+		g.disc(x, y, (1.2f + 6.2f * wdt) * s, col);
+	}
+	g.ln(cx - 8.5f * s, cy + 10.0f * s, cx + 1.5f * s, cy - 1.0f * s, 1.5f * s, Rgba { 22, 56, 30, 0.9f });
+}
+static inline void wrench(Ctx &g, float cx, float cy, float s, Rgba col)
+{
+	g.ln(cx - 8 * s, cy + 8 * s, cx + 5 * s, cy - 5 * s, 3.4f * s, col);
+	g.rng(cx + 6 * s, cy - 6 * s, 4.6f * s, 3.0f * s, col);
+	g.ln(cx + 8 * s, cy + 8 * s, cx - 5 * s, cy - 5 * s, 3.4f * s, col);
+	g.rng(cx - 6 * s, cy - 6 * s, 4.6f * s, 3.0f * s, col);
+}
+static inline void cloud(Ctx &g, float cx, float cy, float s, Rgba col)
+{
+	g.disc(cx - 5 * s, cy + 2 * s, 5.5f * s, col);
+	g.disc(cx + 1 * s, cy - 2.5f * s, 7.0f * s, col);
+	g.disc(cx + 7 * s, cy + 2.5f * s, 5.0f * s, col);
+	g.rr_fill(cx - 10 * s, cy + 2 * s, 21 * s, 6 * s, 3 * s, col);
+}
+static inline void lock(Ctx &g, float cx, float cy, float s, Rgba col, float t = 1.6f)
+{
+	g.rr_stroke(cx - 7 * s, cy - 1 * s, 14 * s, 11 * s, 2.5f * s, t * s, col);
+	g.arcs(cx, cy - 2.0f * s, 4.6f * s, PI_, 2 * PI_, t * s, col);
+	g.disc(cx, cy + 4 * s, 1.5f * s, col);
+}
+static inline void flask(Ctx &g, float cx, float cy, float s, Rgba col, float t = 1.6f)
+{
+	g.ln(cx - 3 * s, cy - 9 * s, cx - 3 * s, cy - 2 * s, t * s, col);
+	g.ln(cx + 3 * s, cy - 9 * s, cx + 3 * s, cy - 2 * s, t * s, col);
+	g.ln(cx - 3 * s, cy - 2 * s, cx - 8 * s, cy + 8 * s, t * s, col);
+	g.ln(cx + 3 * s, cy - 2 * s, cx + 8 * s, cy + 8 * s, t * s, col);
+	g.ln(cx - 8 * s, cy + 8 * s, cx + 8 * s, cy + 8 * s, t * s, col);
+	g.ln(cx - 5 * s, cy - 9 * s, cx + 5 * s, cy - 9 * s, t * s, col);
+}
+static inline void bolt(Ctx &g, float cx, float cy, float s, Rgba col, float t = 1.7f)
+{
+	g.rng(cx, cy, 8.5f * s, t * s, col);
+	g.ln(cx + 1.5f * s, cy - 5 * s, cx - 2.5f * s, cy + 0.5f * s, t * s, col);
+	g.ln(cx - 2.5f * s, cy + 0.5f * s, cx + 2.5f * s, cy + 0.5f * s, t * s, col);
+	g.ln(cx + 2.5f * s, cy + 0.5f * s, cx - 1.5f * s, cy + 6 * s, t * s, col);
+}
+static inline void search(Ctx &g, float cx, float cy, float s, Rgba col, float t = 1.8f)
+{
+	g.rng(cx - 1.5f * s, cy - 1.5f * s, 6.2f * s, t * s, col);
+	g.ln(cx + 3.0f * s, cy + 3.0f * s, cx + 8.0f * s, cy + 8.0f * s, t * s, col);
+}
+static inline void arrow_right(Ctx &g, float cx, float cy, float s, Rgba col, float t = 1.8f)
+{
+	g.ln(cx - 7 * s, cy, cx + 7 * s, cy, t * s, col);
+	g.ln(cx + 1.5f * s, cy - 5.5f * s, cx + 7 * s, cy, t * s, col);
+	g.ln(cx + 1.5f * s, cy + 5.5f * s, cx + 7 * s, cy, t * s, col);
+}
+static inline void check(Ctx &g, float cx, float cy, float s, Rgba col, float t = 2.4f)
+{
+	g.ln(cx - 7 * s, cy + 0.5f * s, cx - 2 * s, cy + 5.5f * s, t * s, col);
+	g.ln(cx - 2 * s, cy + 5.5f * s, cx + 8 * s, cy - 5.5f * s, t * s, col);
+}
+static inline void play(Ctx &g, float cx, float cy, float s, Rgba col)
+{
+	Poly p; p.n = 0; p.add(cx - 5 * s, cy - 7 * s); p.add(cx + 7 * s, cy); p.add(cx - 5 * s, cy + 7 * s); p.finish();
+	Canvas &c = g.c;
+	Poly q; q.n = 0;
+	for (int i = 0; i < p.n; ++i) q.add(g.X(p.v[i].x), g.Y(p.v[i].y));
+	q.finish();
+	fill_poly(c, q, Solid { col });
+}
+static inline void dots(Ctx &g, float cx, float cy, float s, Rgba col)
+{
+	g.disc(cx - 7 * s, cy, 1.5f * s, col); g.disc(cx, cy, 1.5f * s, col); g.disc(cx + 7 * s, cy, 1.5f * s, col);
+}
+static inline void cube(Ctx &g, float cx, float cy, float s, Rgba col, float t = 1.7f)
+{
+	g.ln(cx, cy - 10 * s, cx + 9 * s, cy - 5 * s, t * s, col); g.ln(cx + 9 * s, cy - 5 * s, cx + 9 * s, cy + 5 * s, t * s, col);
+	g.ln(cx + 9 * s, cy + 5 * s, cx, cy + 10 * s, t * s, col); g.ln(cx, cy + 10 * s, cx - 9 * s, cy + 5 * s, t * s, col);
+	g.ln(cx - 9 * s, cy + 5 * s, cx - 9 * s, cy - 5 * s, t * s, col); g.ln(cx - 9 * s, cy - 5 * s, cx, cy - 10 * s, t * s, col);
+	g.ln(cx - 9 * s, cy - 5 * s, cx, cy, t * s, col); g.ln(cx + 9 * s, cy - 5 * s, cx, cy, t * s, col); g.ln(cx, cy, cx, cy + 10 * s, t * s, col);
+}
+static inline void chevron_down(Ctx &g, float cx, float cy, float s, Rgba col, float t = 1.6f)
+{ g.ln(cx - 4 * s, cy - 2 * s, cx, cy + 2 * s, t * s, col); g.ln(cx, cy + 2 * s, cx + 4 * s, cy - 2 * s, t * s, col); }
+static inline void close_x(Ctx &g, float cx, float cy, float s, Rgba col, float t = 2.0f)
+{ g.ln(cx - 5 * s, cy - 5 * s, cx + 5 * s, cy + 5 * s, t * s, col); g.ln(cx + 5 * s, cy - 5 * s, cx - 5 * s, cy + 5 * s, t * s, col); }
+static inline void minus(Ctx &g, float cx, float cy, float s, Rgba col, float t = 1.8f)
+{ g.ln(cx - 5 * s, cy, cx + 5 * s, cy, t * s, col); }
+static inline void maximize(Ctx &g, float cx, float cy, float s, Rgba col, float t = 1.6f)
+{ g.rr_stroke(cx - 5 * s, cy - 5 * s, 10 * s, 10 * s, 2.0f * s, t * s, col); }
+static inline void undo(Ctx &g, float cx, float cy, float s, Rgba col, float t = 1.5f)
+{
+	g.arcs(cx + 0.5f * s, cy + 0.5f * s, 4.0f * s, -PI_ * 0.3f, PI_ * 0.95f, t * s, col);
+	g.ln(cx - 3.8f * s, cy - 3.8f * s, cx - 3.8f * s, cy + 0.2f * s, t * s, col);
+	g.ln(cx - 3.8f * s, cy - 3.8f * s, cx + 0.2f * s, cy - 3.8f * s, t * s, col);
+}
+static inline void small_square(Ctx &g, float cx, float cy, float s, Rgba col, bool dot = false)
+{
+	g.rr_stroke(cx - 6 * s, cy - 6 * s, 12 * s, 12 * s, 2.5f * s, 1.4f * s, col);
+	if (dot) g.disc(cx, cy, 1.8f * s, col);
+	else     g.ln(cx - 2.5f * s, cy, cx + 2.5f * s, cy, 1.3f * s, col);
+}
+static inline void star4(Ctx &g, float cx, float cy, float s, Rgba col)
+{
+	g.ln(cx, cy - 5 * s, cx, cy + 5 * s, 1.6f * s, col); g.ln(cx - 5 * s, cy, cx + 5 * s, cy, 1.6f * s, col);
+	g.ln(cx - 2.8f * s, cy - 2.8f * s, cx + 2.8f * s, cy + 2.8f * s, 1.2f * s, col); g.ln(cx + 2.8f * s, cy - 2.8f * s, cx - 2.8f * s, cy + 2.8f * s, 1.2f * s, col);
+}
+
+} /* namespace Icon */
+
+/* ------------------------------------------------- shared decorative bits */
+
+static constexpr float DW = 1536.0f, DH = 1024.0f;   /* design size */
+
+static inline Rgba orange_edge(float t)   /* top-light -> bottom-deep border gradient */
+{ return mix(Rgba { 255, 188, 112, 1.0f }, Rgba { 226, 96, 22, 1.0f }, clampf(t, 0, 1)); }
+
+/* hexagonal tile (pointy left/right) used by the navigation rail */
+static inline void hex_tile(Ctx &g, float cx, float cy, float w, float h, bool active)
+{
+	float const hw = w * 0.5f, hh = h * 0.5f, tip = hw * 0.42f;
+	Poly p; p.n = 0;
+	p.add(g.X(cx - hw), g.Y(cy)); p.add(g.X(cx - hw + tip), g.Y(cy - hh)); p.add(g.X(cx + hw - tip), g.Y(cy - hh));
+	p.add(g.X(cx + hw), g.Y(cy)); p.add(g.X(cx + hw - tip), g.Y(cy + hh)); p.add(g.X(cx - hw + tip), g.Y(cy + hh)); p.finish();
+	if (active) {
+		glow_poly(g.c, p, g.L(16), g.L(6), Rgba { 255, 130, 30, 0.55f });
+		fill_poly(g.c, p, VGrad { g.Y(cy - hh), g.Y(cy + hh), Rgba { 255, 154, 60, 1.0f }, Rgba { 214, 84, 16, 1.0f } });
+		stroke_poly(g.c, p, g.L(2.0f), Solid { Rgba { 255, 196, 130, 1.0f } });
+	} else {
+		fill_poly(g.c, p, VGrad { g.Y(cy - hh), g.Y(cy + hh), Rgba { 38, 38, 40, 1.0f }, Rgba { 20, 20, 22, 1.0f } });
+		stroke_poly(g.c, p, g.L(1.2f), Solid { Rgba { 104, 88, 70, 0.9f } });
+	}
+}
+
+/* ------------------------------------------------------------ the header */
+
+static inline void draw_header(Ctx &g)
+{
+	/* compass emblem (bitmap, keyed by its own alpha) */
+	float const cx = 82, cy = 58, r = 42;
+	glow_sd(g.c, g.X(cx - r), g.Y(cy - r), g.X(cx + r), g.Y(cy + r), g.L(14), g.L(5), Rgba { 255, 120, 20, 0.30f },
+	        [&](float px, float py) { return sd_circle(px, py, g.X(cx), g.Y(cy), g.L(r - 4)); });
+	draw_image(g.c, g.a.compass, g.X(cx - r), g.Y(cy - r), g.L(2 * r), g.L(2 * r),
+	           [&](float px, float py) { return sd_circle(px, py, g.X(cx), g.Y(cy), g.L(r)); });
+
+	/* wordmark: HermOS with the orange "M" stroke through the H */
+	float const wx = 146, wy = 32, ws = 27.5f;
+	g.text(g.f.reg, wx, wy, ws, Pal::white, "H", 0, 0.45f);
+	float const hw_ = g.tw(g.f.reg, ws, "H");
+	/* orange M-notch inside the H */
+	g.ln(wx + 1.0f, wy + 25.0f, wx + 5.8f, wy + 14.0f, 2.6f, Pal::orange);
+	g.ln(wx + 5.8f, wy + 14.0f, wx + 10.5f, wy + 24.0f, 2.6f, Pal::orange);
+	g.ln(wx + 10.5f, wy + 24.0f, wx + hw_ - 1.0f, wy + 13.0f, 2.6f, Pal::orange);
+	g.text(g.f.reg, wx + hw_ + 7.5f, wy, ws, Pal::white, "erm", 7.5f, 0.45f);
+	float const x2 = wx + hw_ + 7.5f + g.tw(g.f.reg, ws, "erm", 7.5f) + 7.5f;
+	g.text(g.f.reg, x2, wy, ws, Pal::white, "OS", 7.5f, 0.45f);
+	g.text(g.f.med, 146, 66, 12.4f, Pal::text, "A MORE HUMAN COMPUTER", 1.8f);
+}
+
+/* ----------------------------------------------- greeting + the search bar */
+
+static inline Poly search_shape(Ctx &g, float x, float y, float w, float h, float tip)
+{
+	Poly p; p.n = 0;
+	p.add(g.X(x), g.Y(y + h / 2)); p.add(g.X(x + tip), g.Y(y)); p.add(g.X(x + w - tip), g.Y(y));
+	p.add(g.X(x + w), g.Y(y + h / 2)); p.add(g.X(x + w - tip), g.Y(y + h)); p.add(g.X(x + tip), g.Y(y + h)); p.finish();
+	return p;
+}
+
+static inline void draw_greeting_search(Ctx &g, State const &st)
+{
+	g.textc(g.f.med, 530, 206, 31.8f, Pal::white, "Good Morning", 0, 0.0f);
+	g.textc(g.f.reg, 530, 252, 15.8f, Rgba { 245, 247, 250, 0.95f }, "How can I help you today?");
+
+	/* the ONE search field (Google-style): hexagonal pill, glass fill, orange edge */
+	float const x = 287, y = 297, w = 524, h = 54, tip = 25;
+	Poly p = search_shape(g, x, y, w, h, tip);
+	glow_poly(g.c, p, g.L(22), g.L(7), Rgba { 255, 120, 24, st.search_focus ? 0.60f : 0.38f });
+	fill_poly(g.c, p, VGrad { g.Y(y), g.Y(y + h), Rgba { 24, 26, 30, 0.90f }, Rgba { 12, 13, 15, 0.92f } });
+	stroke_poly(g.c, p, g.L(st.search_focus ? 2.6f : 2.0f), VGrad { g.Y(y), g.Y(y + h), Rgba { 255, 190, 112, 1.0f }, Rgba { 232, 102, 24, 1.0f } });
+
+	/* magnifier button */
+	float const bx = x + 41, by = y + h / 2;
+	Poly hx; hx.n = 0;
+	for (int i = 0; i < 6; ++i) { float const a = PI_ / 6 + float(i) * PI_ / 3; hx.add(g.X(bx + cosf_(a) * 19), g.Y(by + sinf_(a) * 19)); }
+	hx.finish();
+	fill_poly(g.c, hx, Solid { Rgba { 34, 36, 40, 1.0f } });
+	stroke_poly(g.c, hx, g.L(1.0f), Solid { Rgba { 96, 98, 104, 0.9f } });
+	Icon::search(g, bx, by, 0.78f, Pal::white);
+
+	/* text */
+	char const *t = st.prompt ? st.prompt : "Ask or describe what you want...";
+	Rgba const tc = st.prompt ? Pal::white : Rgba { 214, 218, 224, 0.92f };
+	g.text(g.f.reg, x + 65, y + 18.5f, 12.0f, tc, t);
+
+	/* submit arrow */
+	float const ax = x + w - 37;
+	Poly ah; ah.n = 0;
+	for (int i = 0; i < 6; ++i) { float const a = PI_ / 6 + float(i) * PI_ / 3; ah.add(g.X(ax + cosf_(a) * 18), g.Y(by + sinf_(a) * 18)); }
+	ah.finish();
+	fill_poly(g.c, ah, Solid { Rgba { 24, 25, 28, 1.0f } });
+	stroke_poly(g.c, ah, g.L(1.0f), Solid { Rgba { 110, 108, 104, 0.9f } });
+	Icon::arrow_right(g, ax, by, 0.72f, Pal::white);
+}
+
+/* ------------------------------------------------------ navigation rail (right) */
+
+static inline void draw_rail(Ctx &g, State const &st)
+{
+	float const x = 1090, y = 12, w = 92, h = 540;
+	Poly p; chamfer_poly(p, g.X(x), g.Y(y), g.L(w), g.L(h), g.L(24), 0, 0, g.L(24));
+	glow_poly(g.c, p, g.L(8), g.L(3), Rgba { 0, 0, 0, 0.5f });
+	fill_poly(g.c, p, VGrad { g.Y(y), g.Y(y + h), Rgba { 17, 17, 19, 0.97f }, Rgba { 9, 9, 10, 0.98f } });
+	stroke_poly(g.c, p, g.L(1.4f), VGrad { g.Y(y), g.Y(y + h), Rgba { 122, 104, 82, 0.9f }, Rgba { 64, 54, 44, 0.9f } });
+
+	/* top: compass medallion */
+	g.rng(1128, 52, 25, 2.2f, Rgba { 255, 140, 36, 0.95f });
+	g.rng(1128, 52, 22, 1.0f, Rgba { 255, 190, 110, 0.5f });
+	draw_image(g.c, g.a.compass, g.X(1128 - 20), g.Y(52 - 20), g.L(40), g.L(40),
+	           [&](float px, float py) { return sd_circle(px, py, g.X(1128), g.Y(52), g.L(20)); });
+
+	static char const *const names[6] = { "Agents", "System", "Files", "Network", "Devices", "Settings" };
+	for (int i = 0; i < 6; ++i) {
+		float const cy = 115 + float(i) * 70.8f;
+		bool const act = i == st.rail_active;
+		hex_tile(g, 1128, cy, 48, 46, act);
+		Rgba const ic = act ? Rgba { 255, 232, 205, 1.0f } : Rgba { 236, 238, 240, 0.96f };
+		switch (i) {
+		case 0: Icon::agents(g, 1128, cy, 1.0f, ic); break;
+		case 1: Icon::gear(g, 1128, cy, 0.95f, ic); break;
+		case 2: Icon::folder(g, 1128, cy, 1.0f, ic); break;
+		case 3: Icon::network(g, 1128, cy - 1, 0.95f, ic); break;
+		case 4: Icon::devices(g, 1128, cy, 1.0f, ic); break;
+		case 5: Icon::gear(g, 1128, cy, 0.95f, ic); break;
+		}
+		g.textc(g.f.med, 1128, cy + 25.0f, 10.4f, Rgba { 245, 246, 248, 0.97f }, names[i]);
+	}
+	/* notification badge on Agents */
+	g.disc(1147, 98, 8.6f, Rgba { 255, 120, 24, 1.0f });
+	g.rng(1147, 98, 8.6f, 1.0f, Rgba { 255, 200, 140, 0.9f });
+	g.textc(g.f.semi, 1147, 90.5f, 11.5f, Pal::white, "3");
+}
+
+/* -------------------------------------------------- Agents & Workers panel */
+
+struct AgentRow { char const *name; char const *sub; };
+
+static inline void agent_icon_tile(Ctx &g, float x, float y, float s, int kind, bool active)
+{
+	g.rr_fillg(x, y, s, s, 8, active ? Rgba { 22, 24, 24, 1.0f } : Rgba { 30, 29, 28, 1.0f });
+	g.rr_stroke(x, y, s, s, 8, 1.0f, active ? Rgba { 60, 52, 44, 0.9f } : Rgba { 82, 74, 64, 0.8f });
+	float const cx = x + s / 2, cy = y + s / 2;
+	if (active) {
+		switch (kind) {
+		case 0: g.rr_fillg(x + 1, y + 1, s - 2, s - 2, 7, Rgba { 28, 54, 34, 1.0f }); Icon::leaf(g, cx, cy, 1.05f, Rgba { 70, 200, 96, 1.0f }); break;
+		case 1: Icon::wrench(g, cx, cy, 1.15f, Rgba { 255, 150, 40, 1.0f }); break;
+		default: Icon::cloud(g, cx, cy, 1.15f, Rgba { 255, 140, 30, 1.0f }); break;
+		}
+	} else {
+		Rgba const ic { 232, 214, 190, 0.95f };
+		switch (kind) {
+		case 0: Icon::folder(g, cx, cy, 0.95f, ic); break;
+		case 1: Icon::lock(g, cx, cy, 1.0f, ic); break;
+		case 2: Icon::flask(g, cx, cy, 1.0f, ic); break;
+		case 3: Icon::folder(g, cx, cy, 0.95f, ic); g.disc(cx + 1, cy + 2, 2.2f, ic); break;
+		default: Icon::bolt(g, cx, cy, 1.0f, ic); break;
+		}
+	}
+}
+
+static inline void draw_sidebar(Ctx &g, State const &st)
+{
+	float const x = 1180, y = 0, w = 356, h = 548;
+	Poly p; chamfer_poly(p, g.X(x), g.Y(y), g.L(w + 4), g.L(h), 0, 0, 0, 0);
+	fill_poly(g.c, p, VGrad { g.Y(y), g.Y(y + h), Rgba { 10, 10, 12, 0.985f }, Rgba { 8, 8, 9, 0.985f } });
+	g.ln(1180.5f, 0, 1180.5f, 548, 1.2f, Rgba { 70, 62, 54, 0.8f });
+
+	g.text(g.f.med, 1200, 12, 17.3f, Pal::white, "Agents & Workers");
+	Icon::close_x(g, 1514, 22, 0.95f, Rgba { 230, 232, 235, 0.95f }, 1.7f);
+	g.text(g.f.med, 1200, 47, 13.3f, Pal::orange, "Active (3)");
+
+	struct Card { float y, h; int kind; char const *name, *sub; } cards[3] = {
+		{ 69, 58, 0, "Hydroponics Agent", "Capturing image in 2 min..." },
+		{ 137, 61, 1, "System Maintenance", "Running scheduled tasks..." },
+		{ 204, 56, 2, "Weather Monitor", "Checking conditions..." },
+	};
+	for (int i = 0; i < 3; ++i) {
+		Card const &cd = cards[i];
+		float const cx0 = 1195, cw = 327;
+		Poly cp = Poly(); chamfer_poly(cp, g.X(cx0), g.Y(cd.y), g.L(cw), g.L(cd.h), g.L(9), g.L(9), g.L(9), g.L(9));
+		glow_poly(g.c, cp, g.L(10), g.L(4), Rgba { 255, 110, 20, 0.42f });
+		fill_poly(g.c, cp, VGrad { g.Y(cd.y), g.Y(cd.y + cd.h), Rgba { 29, 18, 11, 1.0f }, Rgba { 17, 12, 9, 1.0f } });
+		stroke_poly(g.c, cp, g.L(1.8f), VGrad { g.Y(cd.y), g.Y(cd.y + cd.h), Rgba { 255, 150, 60, 1.0f }, Rgba { 236, 104, 24, 1.0f } });
+		g.disc(1204, cd.y + 11, 1.9f, Rgba { 255, 140, 40, 1.0f });
+		g.disc(1204, cd.y + cd.h - 12, 1.9f, Rgba { 255, 140, 40, 1.0f });
+		float const ty = cd.y + (cd.h - 40) / 2;
+		agent_icon_tile(g, 1211, ty, 40, cd.kind, true);
+		float const nty = i == 2 ? cd.y + 11 : cd.y + 11;
+		g.text(g.f.med, 1261, nty + 1, 11.2f, Pal::white, cd.name);
+		g.text(g.f.reg, 1261, nty + 21, 10.6f, Rgba { 188, 192, 198, 1.0f }, cd.sub);
+		Icon::dots(g, 1497, cd.y + (i == 1 ? 14 : cd.h / 2 - 1), 0.62f, Rgba { 232, 234, 237, 0.95f });
+	}
+	/* hydroponics thumbnail */
+	draw_image(g.c, g.a.hydro_thumb, g.X(1413), g.Y(76), g.L(67), g.L(46),
+	           [&](float px, float py) { return sd_rrect(px, py, g.X(1446.5f), g.Y(99), g.L(33.5f), g.L(23), g.L(3)); });
+	stroke_rrect(g.c, g.X(1413), g.Y(76), g.L(67), g.L(46), g.L(3), g.L(1.0f), Solid { Rgba { 220, 224, 228, 0.7f } });
+	g.disc(1263, 112, 2.0f, Rgba { 255, 130, 30, 1.0f });   /* status dot */
+	/* progress bar on the maintenance card */
+	g.rr_fill(1261, 181, 187, 7.5f, 3.7f, Rgba { 46, 40, 36, 1.0f });
+	g.rr_fillg(1261, 181, 187 * 0.82f, 7.5f, 3.7f, HGrad { g.X(1261), g.X(1261 + 154), Rgba { 255, 170, 70, 1.0f }, Rgba { 236, 110, 28, 1.0f } });
+	g.textr(g.f.reg, 1462, 178, 8.0f, Rgba { 214, 216, 220, 1.0f }, "82%");
+
+	g.text(g.f.med, 1200, 273, 13.4f, Pal::white, "Inactive (5)");
+	static AgentRow const rows[5] = { { "Media Organizer", "Ready" }, { "Home Security", "Ready" }, { "Research Assistant", "Ready" },
+	                                  { "Backup Worker", "Ready" }, { "Energy Monitor", "Ready" } };
+	for (int i = 0; i < 5; ++i) {
+		float const ry = 297.5f + float(i) * 51.2f, rh = 48;
+		Poly rp; chamfer_poly(rp, g.X(1195), g.Y(ry), g.L(327), g.L(rh), g.L(8), g.L(8), g.L(8), g.L(8));
+		fill_poly(g.c, rp, VGrad { g.Y(ry), g.Y(ry + rh), Rgba { 17, 17, 19, 1.0f }, Rgba { 12, 12, 14, 1.0f } });
+		stroke_poly(g.c, rp, g.L(1.1f), Solid { Rgba { 86, 76, 66, 0.85f } });
+		agent_icon_tile(g, 1210, ry + 6, 36, i, false);
+		g.text(g.f.med, 1261, ry + 7, 11.1f, Pal::white, rows[i].name);
+		g.text(g.f.reg, 1261, ry + 25.5f, 10.5f, Rgba { 178, 180, 184, 1.0f }, rows[i].sub);
+		/* play + dots */
+		g.rr_fill(1446, ry + 7, 33, 33, 8, Rgba { 36, 35, 36, 1.0f });
+		g.rr_stroke(1446, ry + 7, 33, 33, 8, 1.0f, Rgba { 96, 88, 78, 0.9f });
+		Icon::play(g, 1462, ry + 23.5f, 0.78f, Rgba { 238, 214, 190, 1.0f });
+		Icon::dots(g, 1497, ry + 24, 0.62f, Rgba { 232, 234, 237, 0.95f });
+	}
+}
+
+/* ------------------------------------------------------------- taskbar */
+
+static inline void draw_taskbar(Ctx &g, State const &st)
+{
+	float const sh = st.bottom.shown();
+	if (sh <= 0.002f) return;
+	float const full = 28.0f;
+	float const y = 511 + (1.0f - sh) * (full + 8);
+	Rect const r { 0, y, 1090, full };
+	Poly p; chamfer_poly(p, g.X(r.x), g.Y(r.y), g.L(r.w), g.L(r.h), 0, g.L(14), 0, 0);
+	fill_poly(g.c, p, VGrad { g.Y(r.y), g.Y(r.y + r.h), Rgba { 14, 15, 18, 0.93f }, Rgba { 8, 9, 11, 0.95f } });
+	g.ln(0, r.y + 0.5f, 1076, r.y + 0.5f, 1.0f, Rgba { 90, 80, 70, 0.55f });
+
+	/* small emblem + wordmark */
+	draw_image(g.c, g.a.compass, g.X(10), g.Y(y + 4), g.L(20), g.L(20),
+	           [&](float px, float py) { return sd_circle(px, py, g.X(20), g.Y(y + 14), g.L(10)); });
+	g.text(g.f.med, 34, y + 6.0f, 10.9f, Pal::white, "HermOS");
+
+	/* status glyphs: display, volume, network */
+	Icon::monitor(g, 843, y + 13.5f, 0.62f, Rgba { 214, 218, 224, 1.0f });
+	{
+		float const vx = 876, vy = y + 13.5f;
+		g.rr_fill(vx - 5, vy - 2.6f, 3.4f, 5.2f, 1.0f, Rgba { 214, 218, 224, 1.0f });
+		Poly sp; sp.n = 0; sp.add(g.X(vx - 3), g.Y(vy - 2.8f)); sp.add(g.X(vx + 1.5f), g.Y(vy - 6)); sp.add(g.X(vx + 1.5f), g.Y(vy + 6)); sp.add(g.X(vx - 3), g.Y(vy + 2.8f)); sp.finish();
+		fill_poly(g.c, sp, Solid { Rgba { 214, 218, 224, 1.0f } });
+		g.arcs(vx + 2, vy, 4.2f, -0.8f, 0.8f, 1.1f, Rgba { 214, 218, 224, 1.0f });
+		g.arcs(vx + 2, vy, 7.0f, -0.8f, 0.8f, 1.1f, Rgba { 214, 218, 224, 1.0f });
+	}
+	Icon::network(g, 912, y + 12.5f, 0.5f, Rgba { 214, 218, 224, 1.0f }, 1.9f);
+	g.text(g.f.reg, 939, y + 6.0f, 11.4f, Pal::text, st.clock);
+}
+
+/* --------------------------------------------------------- hideable left dock */
+
+static inline void draw_left_dock(Ctx &g, State const &st, Hits &hits)
+{
+	float const sh = st.left.shown();
+	float const tw_ = st.left.thickness;
+	hits.left_panel = { 0, 0, 0, 0 };
+	if (sh <= 0.002f) return;
+	float const x = -(tw_ + 6) * (1.0f - sh);
+	float const y = 120, h = 330;
+	hits.left_panel = { x, y, tw_, h };
+
+	Poly p; chamfer_poly(p, g.X(x), g.Y(y), g.L(tw_), g.L(h), 0, g.L(16), g.L(16), 0);
+	glow_poly(g.c, p, g.L(12), g.L(5), Rgba { 0, 0, 0, 0.5f });
+	fill_poly(g.c, p, VGrad { g.Y(y), g.Y(y + h), Rgba { 17, 17, 19, 0.96f }, Rgba { 9, 9, 10, 0.97f } });
+	stroke_poly(g.c, p, g.L(1.3f), Solid { Rgba { 110, 94, 76, 0.9f } });
+
+	static char const *const labels[4] = { "Files", "Terminal", "Agents", "Install" };
+	hits.launcher_count = 4;
+	for (int i = 0; i < 4; ++i) {
+		float const cy = y + 40 + float(i) * 68, cx = x + tw_ / 2 - 3;
+		hex_tile(g, cx, cy, 48, 46, i == 3);
+		Rgba const ic { 236, 238, 240, 0.96f };
+		switch (i) {
+		case 0: Icon::folder(g, cx, cy, 1.0f, ic); break;
+		case 1: g.rr_stroke(cx - 9, cy - 7, 18, 14, 2.5f, 1.6f, ic); g.ln(cx - 5, cy - 2, cx - 2, cy + 1, 1.6f, ic); g.ln(cx - 2, cy + 1, cx - 5, cy + 4, 1.6f, ic); g.ln(cx + 1, cy + 4, cx + 5, cy + 4, 1.6f, ic); break;
+		case 2: Icon::agents(g, cx, cy, 1.0f, ic); break;
+		default: Icon::arrow_right(g, cx, cy, 0.9f, Pal::white); break;
+		}
+		g.textc(g.f.med, cx, cy + 25.0f, 10.4f, Rgba { 245, 246, 248, 0.97f }, labels[i]);
+		hits.launcher[i] = { cx - 25, cy - 27, 50, 54 };
+	}
+}
+
+/* ---------------------------------------------------------- window chrome */
+
+struct WinGeom
+{
+	float x, y, w, h;           /* canvas px */
+	float s;                    /* local scale (px per reference px) */
+};
+
+static inline Poly window_shape(float x, float y, float w, float h)
+{
+	float const c = minf(w, h) * 0.135f;
+	Poly p; chamfer_poly(p, x, y, w, h, c, c, c, c);
+	return p;
+}
+
+static inline void window_frame(Ctx &g, WinGeom const &wg, bool active, bool hosted)
+{
+	Poly p = window_shape(wg.x, wg.y, wg.w, wg.h);
+	float const k = wg.s;
+	glow_poly(g.c, p, 11 * k, 3.6f * k, Rgba { 255, 112, 22, active ? 0.34f : 0.24f });
+	fill_poly(g.c, p, VGrad { wg.y, wg.y + wg.h, Rgba { 17, 18, 21, 0.95f }, Rgba { 8, 9, 11, 0.97f } });
+	/* inner bevel */
+	Poly q = window_shape(wg.x + 5 * k, wg.y + 5 * k, wg.w - 10 * k, wg.h - 10 * k);
+	stroke_poly(g.c, q, 1.0f * k, Solid { Rgba { 255, 170, 90, 0.20f } });
+	/* thick luminous border */
+	stroke_poly(g.c, p, 3.4f * k, DGrad { wg.x, wg.y, wg.x + wg.w, wg.y + wg.h, Rgba { 255, 200, 126, 1.0f }, Rgba { 226, 92, 20, 1.0f } });
+	stroke_poly(g.c, p, 1.2f * k, Solid { Rgba { 255, 226, 176, 0.55f } });
+	(void)hosted;
+}
+
+/* local-coordinate helper for window content; (lx,ly) in reference px */
+struct Loc
+{
+	Ctx &g; WinGeom wg; float ox_, oy_;     /* design offset so that crop coords map correctly */
+	float s_;
+	/* map "crop" coordinates (1.9x zoom of the reference sheet) into canvas px */
+	float X(float cx) const { return wg.x + (cx / 1.9f - ox_) * wg.s; }
+	float Y(float cy) const { return wg.y + (cy / 1.9f - oy_) * wg.s; }
+	float S(float v)  const { return v / 1.9f * wg.s; }
+
+	float text(Font &f, float cx, float cy, float size, Rgba col, char const *t, float tr = 0, float bold = 0)
+	{ return draw_text(g.c, f, X(cx), Y(cy), S(size), col, t, tr * wg.s, bold) ; }
+	float textc(Font &f, float cx, float cy, float size, Rgba col, char const *t, float tr = 0)
+	{ return draw_text_center(g.c, f, X(cx), Y(cy), S(size), col, t, tr * wg.s); }
+	float textr(Font &f, float cx, float cy, float size, Rgba col, char const *t)
+	{ return draw_text_right(g.c, f, X(cx), Y(cy), S(size), col, t); }
+	float tw(Font &f, float size, char const *t) { return text_width(f, S(size), t); }
+
+	void rr(float cx, float cy, float w, float h, float r, Rgba fill, Rgba stroke, float st = 1.0f)
+	{
+		if (fill.a > 0)   fill_rrect(g.c, X(cx), Y(cy), S(w), S(h), S(r), Solid { fill });
+		if (stroke.a > 0) stroke_rrect(g.c, X(cx), Y(cy), S(w), S(h), S(r), st * wg.s, Solid { stroke });
+	}
+	template <class COL> void rrg(float cx, float cy, float w, float h, float r, COL col)
+	{ fill_rrect(g.c, X(cx), Y(cy), S(w), S(h), S(r), col); }
+	void ln(float x0, float y0, float x1, float y1, float t, Rgba col) { line(g.c, X(x0), Y(y0), X(x1), Y(y1), t * wg.s, col); }
+	void disc(float cx, float cy, float r, Rgba col) { fill_circle(g.c, X(cx), Y(cy), S(r), col); }
+	void rng(float cx, float cy, float r, float t, Rgba col) { ring(g.c, X(cx), Y(cy), S(r), t * wg.s, col); }
+
+	/* a Ctx whose design space equals this window's pixel space, for the shared icons */
+	Ctx sub() const { return Ctx { g.c, g.f, g.a, 1.0f, 0, 0 }; }
+	float scale() const { return wg.s; }
+};
+
+/* generic pieces ----------------------------------------------------------- */
+
+static inline void win_controls(Loc &l, float x_undo, float x_min, float x_max, float x_close, float cy, bool have_min = true)
+{
+	Ctx s = l.sub(); float const k = l.wg.s * 0.9f;
+	Rgba const dim { 212, 214, 218, 0.92f };
+	if (x_undo > 0) Icon::undo(s, l.X(x_undo), l.Y(cy), k, dim);
+	if (have_min && x_min > 0) Icon::minus(s, l.X(x_min), l.Y(cy), k, dim);
+	if (x_max > 0) Icon::maximize(s, l.X(x_max), l.Y(cy), k, dim);
+	Icon::close_x(s, l.X(x_close), l.Y(cy), k * 1.1f, Rgba { 255, 160, 48, 1.0f }, 2.2f);
+}
+
+static inline void nav_item(Loc &l, Font &fm, Font &fr, float icx, float tcx, float cy, float size, char const *name, bool active, int kind,
+                            float pill_x0 = 0, float pill_x1 = 0, float pill_h = 40)
+{
+	Ctx s = l.sub(); float const k = l.wg.s;
+	if (active) {
+		float const w = pill_x1 - pill_x0;
+		fill_rrect(l.g.c, l.X(pill_x0), l.Y(cy - pill_h / 2), l.S(w), l.S(pill_h), l.S(8),
+		           HGrad { l.X(pill_x0), l.X(pill_x1), Rgba { 232, 112, 30, 1.0f }, Rgba { 120, 62, 24, 1.0f } });
+		stroke_rrect(l.g.c, l.X(pill_x0), l.Y(cy - pill_h / 2), l.S(w), l.S(pill_h), l.S(8), 1.0f * k, Solid { Rgba { 255, 170, 96, 0.9f } });
+	}
+	Rgba const ic = active ? Rgba { 255, 244, 232, 1.0f } : Rgba { 232, 234, 238, 0.92f };
+	float const sz = 0.62f * k;
+	float const x = l.X(icx), y = l.Y(cy);
+	switch (kind) {
+	case 0: Icon::small_square(s, x, y, sz * 1.0f, ic, true); break;
+	case 1: Icon::monitor(s, x, y, sz * 0.7f, ic, 1.8f); break;
+	case 2: Icon::folder(s, x, y, sz * 0.7f, ic, 1.8f); break;
+	case 3: Icon::network(s, x, y, sz * 0.6f, ic, 1.9f); break;
+	case 4: Icon::user(s, x, y, sz * 0.7f, ic, 1.9f); break;
+	case 5: Icon::gear(s, x, y, sz * 0.62f, ic, 1.9f); break;
+	case 6: Icon::lock(s, x, y, sz * 0.7f, ic, 1.8f); break;
+	default: Icon::small_square(s, x, y, sz * 1.0f, ic, false); break;
+	}
+	l.text(active ? fm : fr, tcx, cy - size * 0.62f, size, active ? Pal::white : Rgba { 226, 228, 232, 0.96f }, name);
+}
+
+} /* namespace Scene */
+
+#include "scene_windows.h"
+
+namespace Scene {
+
+/* ------------------------------------------------------- full desktop */
+
+static inline void draw_wallpaper(Ctx &g)
+{
+	Canvas &c = g.c;
+	Image const &w = g.a.wall;
+	if (!w.rgba) { for (int i = 0; i < c.w * c.h; ++i) c.px[i] = 0x10161c; return; }
+	/* cover-fit with the design-space centre preserved */
+	for (int y = 0; y < c.h; ++y) {
+		float const v = (float(y) - g.oy) / g.k * float(w.h) / DH;
+		for (int x = 0; x < c.w; ++x) {
+			float const u = (float(x) - g.ox) / g.k * float(w.w) / DW;
+			Rgba const s = sample(w, u, v);
+			c.px[y * c.w + x] = (uint32_t(s.r) << 16) | (uint32_t(s.g) << 8) | uint32_t(s.b);
+		}
+	}
+}
+
+static inline Ctx make_ctx(Canvas &c, Fonts &f, Assets &a)
+{
+	Ctx g { c, f, a, minf(float(c.w) / DW, float(c.h) / DH), 0, 0 };
+	g.ox = (float(c.w) - DW * g.k) * 0.5f; g.oy = (float(c.h) - DH * g.k) * 0.5f;
+	return g;
+}
+
+/* Base layer: everything that does not animate with the hideable panels.
+ * desktop_builder caches this frame and only redraws it when the windows,
+ * the search text or the clock change. */
+static inline void render_base(Canvas &c, Fonts &f, Assets &a, State &st)
+{
+	Ctx g = make_ctx(c, f, a);
+	draw_wallpaper(g);
+	draw_header(g);
+	draw_greeting_search(g, st);
+	draw_rail(g, st);
+	draw_sidebar(g, st);
+
+	/* the six windows, in z-order */
+	for (int oi = 0; oi < 6; ++oi) {
+		int const i = st.order[oi];
+		if (i < 0 || i > 5 || !st.win_open[i]) continue;
+		draw_window(g, i, st.win[i], i == st.active_win, st.win_hosted[i], st);
+	}
+}
+
+/* Panel layer: the two hideable panels (left launcher dock, bottom bar) and
+ * their reveal grips. Cheap enough to redraw every animation frame. */
+static inline void render_panels(Canvas &c, Fonts &f, Assets &a, State &st, Hits &hits)
+{
+	Ctx g = make_ctx(c, f, a);
+	hits = Hits();
+	draw_taskbar(g, st);
+	draw_left_dock(g, st, hits);
+
+	hits.left_grip   = { 0, 120, 6, 330 };
+	hits.bottom_grip = { 380, 516, 330, 20 };
+	if (!st.bottom.visible()) g.rr_fill(520, 524, 50, 4, 2, Rgba { 255, 170, 80, 0.55f });
+	if (!st.left.visible())   g.rr_fill(3, 245, 4, 80, 2, Rgba { 255, 170, 80, 0.55f });
+}
+
+/* whole frame in one call (host preview) */
+static inline void render(Canvas &c, Fonts &f, Assets &a, State &st, Hits &hits)
+{
+	render_base(c, f, a, st);
+	render_panels(c, f, a, st, hits);
+}
+
+} /* namespace Scene */
+
+#endif /* _HERMOS_SCENE_H_ */

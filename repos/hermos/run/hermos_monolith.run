@@ -157,6 +157,12 @@ config
         + null
       + dir assets
         + rom Roboto-Regular.ttf
+        + rom Inter-Regular.ttf
+        + rom Inter-Medium.ttf
+        + rom Inter-SemiBold.ttf
+        + rom compass.png
+        + rom hydro_thumb.png
+        + rom hydro_big.png
         + rom icon_search.png
         + rom icon_folder.png
         + rom icon_mic.png
@@ -388,6 +394,9 @@ close $term_config_fd
 # package the stb UI assets (font + icons) as ROMs mounted at /assets
 set asset_dir [genode_dir]/repos/hermos/src/app/desktop_builder/assets
 exec cp $asset_dir/Roboto-Regular.ttf bin/Roboto-Regular.ttf
+foreach scene_asset {Inter-Regular.ttf Inter-Medium.ttf Inter-SemiBold.ttf compass.png hydro_thumb.png hydro_big.png} {
+	exec cp $asset_dir/$scene_asset bin/$scene_asset
+}
 exec cp $asset_dir/search.png bin/icon_search.png
 exec cp $asset_dir/folder.png bin/icon_folder.png
 exec cp $asset_dir/mic.png bin/icon_mic.png
@@ -403,7 +412,7 @@ exec cp $asset_dir/apps.registry bin/registry
 exec cp $asset_dir/files_menu.xml bin/files_menu
 exec cp [genode_dir]/repos/hermos/src/app/theme_engine/theme.hid bin/theme.hid
 
-set boot_modules [list {*}[build_artifacts] hermos_drivers.config hermos_terminal.config Roboto-Regular.ttf icon_search.png icon_folder.png icon_mic.png icon_user.png icon_terminal.png icon_close.png icon_minimize.png icon_pause.png wallpaper.png logo.png icon_leaf.png registry files_menu menu_view_style.tar theme.hid hermos-system.img]
+set boot_modules [list {*}[build_artifacts] hermos_drivers.config hermos_terminal.config Roboto-Regular.ttf Inter-Regular.ttf Inter-Medium.ttf Inter-SemiBold.ttf compass.png hydro_thumb.png hydro_big.png icon_search.png icon_folder.png icon_mic.png icon_user.png icon_terminal.png icon_close.png icon_minimize.png icon_pause.png wallpaper.png logo.png icon_leaf.png registry files_menu menu_view_style.tar theme.hid hermos-system.img]
 build_boot_image $boot_modules
 
 if {[cmd_arg --hermos-build-only no] eq "yes"} {
