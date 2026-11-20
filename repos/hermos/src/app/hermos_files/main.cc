@@ -183,12 +183,16 @@ class FileManager
 		/* walk the directory at `path` (absolute) and populate the entry list */
 		void scan_directory(char const *path)
 		{
+			/* copy the path BEFORE clearing entries: the caller (handle_press)
+			 * passes a pointer into one of the entries freed below, so reading
+			 * `path` afterwards is a use-after-free */
+			Directory::Path p(path);
+
 			while (FileEntry *e = _entries.first()) {
 				_entries.remove(e);
 				_alloc.free(e, sizeof(FileEntry));
 			}
 
-			Directory::Path p(path);
 			if (_dir.directory_exists(p)) _cwd = p;
 
 			Directory sub(_dir, _cwd);
