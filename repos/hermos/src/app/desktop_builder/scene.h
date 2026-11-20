@@ -759,14 +759,15 @@ static inline void window_frame(Ctx &g, WinGeom const &wg, bool active, bool hos
 	Poly p = window_shape(wg.x, wg.y, wg.w, wg.h);
 	float const k = wg.s;
 	glow_poly(g.c, p, 11 * k, 3.6f * k, Rgba { 255, 112, 22, active ? 0.34f : 0.24f });
-	fill_poly(g.c, p, VGrad { wg.y, wg.y + wg.h, Rgba { 17, 18, 21, 0.95f }, Rgba { 8, 9, 11, 0.97f } });
+	/* a Cell that hosts an app is fully opaque, so a Cell behind it can never bleed through */
+	float const a0 = hosted ? 1.0f : 0.95f, a1 = hosted ? 1.0f : 0.97f;
+	fill_poly(g.c, p, VGrad { wg.y, wg.y + wg.h, Rgba { 17, 18, 21, a0 }, Rgba { 8, 9, 11, a1 } });
 	/* inner bevel */
 	Poly q = window_shape(wg.x + 5 * k, wg.y + 5 * k, wg.w - 10 * k, wg.h - 10 * k);
 	stroke_poly(g.c, q, 1.0f * k, Solid { Rgba { 255, 170, 90, 0.20f } });
 	/* thick luminous border */
 	stroke_poly(g.c, p, 3.4f * k, DGrad { wg.x, wg.y, wg.x + wg.w, wg.y + wg.h, Rgba { 255, 200, 126, 1.0f }, Rgba { 226, 92, 20, 1.0f } });
 	stroke_poly(g.c, p, 1.2f * k, Solid { Rgba { 255, 226, 176, 0.55f } });
-	(void)hosted;
 }
 
 /* local-coordinate helper for window content; (lx,ly) in reference px */
@@ -872,6 +873,16 @@ static inline Ctx make_ctx(Canvas &c, Fonts &f, Assets &a)
 	return g;
 }
 
+/* index into the z-order of the first open Cell that hosts an app (6 = none) */
+static inline int top_split(State const &st)
+{
+	for (int oi = 0; oi < 6; ++oi) {
+		int const i = st.order[oi];
+		if (i >= 0 && i < 6 && st.win_open[i] && st.win_hosted[i]) return oi;
+	}
+	return 6;
+}
+
 /* Base layer: everything that does not animate with the hideable panels.
  * desktop_builder caches this frame and only redraws it when the windows,
  * the search text or the clock change. */
@@ -884,11 +895,26 @@ static inline void render_base(Canvas &c, Fonts &f, Assets &a, State &st, Hits &
 	draw_rail(g, st);
 	draw_sidebar(g, st, hits);
 
-	/* the six windows, in z-order */
-	for (int oi = 0; oi < 6; ++oi) {
+	/* the Cells below the first hosted one, in z-order (static content only) */
+	int const split = top_split(st);
+	for (int oi = 0; oi < split; ++oi) {
 		int const i = st.order[oi];
 		if (i < 0 || i > 5 || !st.win_open[i]) continue;
 		draw_window(g, i, st.win[i], i == st.active_win, st.win_hosted[i], st);
+	}
+}
+
+/* Top pass: from the first hosted Cell upwards every Cell is drawn frame first, then its
+ * app content (blit callback), bottom to top, so a Cell in front fully hides the ones behind.
+ * Redrawn every frame because hosted apps change continuously. */
+static inline void render_top(Canvas &c, Fonts &f, Assets &a, State &st, void (*blit)(void *, int), void *ctx)
+{
+	Ctx g = make_ctx(c, f, a);
+	for (int oi = top_split(st); oi < 6; ++oi) {
+		int const i = st.order[oi];
+		if (i < 0 || i > 5 || !st.win_open[i]) continue;
+		draw_window(g, i, st.win[i], i == st.active_win, st.win_hosted[i], st);
+		if (st.win_hosted[i] && blit) blit(ctx, i);
 	}
 }
 

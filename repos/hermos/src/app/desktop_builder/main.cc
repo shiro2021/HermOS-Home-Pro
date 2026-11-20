@@ -3537,17 +3537,19 @@ namespace Hermos {
 			}
 			Genode::memcpy(_px, _scene_px, size_t(_w) * size_t(_h) * 4);
 			{
-				/* the hideable panels are redrawn every frame (cheap) */
 				Scene::Canvas c { (uint32_t *)_px, _w, _h };
-				Scene::render_panels(c, _sfonts, _sassets, _sstate, _shits);
-			}
 
-			/* hosted apps draw over their window frame */
-			for (int oi = 0; oi < NUM_CELLS; ++oi) {
-				int const i = _draw_order[oi];
-				if (!_win_open[i]) continue;
-				Cell_session *hosted = _gui_root.cells().at(i);
-				if (hosted) _blit_cell(i, hosted);
+				/* Cells from the first hosted one upwards: frame, then app content, in z-order */
+				struct Ctx { Main *m; };
+				Ctx ctx { this };
+				Scene::render_top(c, _sfonts, _sassets, _sstate,
+				                  [] (void *p, int i) {
+				                      Main *m = static_cast<Ctx *>(p)->m;
+				                      if (Cell_session *h = m->_gui_root.cells().at(i)) m->_blit_cell(i, h);
+				                  }, &ctx);
+
+				/* the hideable panels are redrawn every frame (cheap) and sit above all Cells */
+				Scene::render_panels(c, _sfonts, _sassets, _sstate, _shits);
 			}
 
 			Surface<Pixel> surface(_px, Area(unsigned(_w), unsigned(_h)));
