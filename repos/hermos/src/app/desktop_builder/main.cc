@@ -3683,7 +3683,7 @@ namespace Hermos {
 							if (i < 2 || _preview || _app_kind[i] != APP_NONE || _gui_root.cells().at(i)) _win_open[i] = true;
 						_dirty = true; return true;
 					}
-				if (x >= int(m.X(380)) && x < int(m.X(710))) { _sstate.bottom.toggle(); _dirty = true; return true; }
+				if (x >= int(m.X(Scene::DW * 0.5f - 165)) && x < int(m.X(Scene::DW * 0.5f + 165))) { _sstate.bottom.toggle(); _dirty = true; return true; }
 			}
 
 			/* the single search field */

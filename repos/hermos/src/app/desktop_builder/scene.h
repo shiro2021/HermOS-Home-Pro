@@ -187,7 +187,10 @@ static inline Map map_for(int w, int h)
 	return { k, (float(w) - 1536.0f * k) * 0.5f, (float(h) - 1024.0f * k) * 0.5f };
 }
 
-static constexpr Rect TASKBAR_RECT { 0, 511, 1090, 28 };
+static constexpr float DW = 1536.0f, DH = 1024.0f;   /* design size */
+static constexpr float TASKBAR_H = 28.0f;
+/* the bottom bar: full width, on the bottom edge of the screen */
+static constexpr Rect TASKBAR_RECT { 0, DH - TASKBAR_H, DW, TASKBAR_H };
 
 /* -------------------------------------------------------------- the Ctx */
 
@@ -395,7 +398,6 @@ static inline void star4(Ctx &g, float cx, float cy, float s, Rgba col)
 
 /* ------------------------------------------------- shared decorative bits */
 
-static constexpr float DW = 1536.0f, DH = 1024.0f;   /* design size */
 
 static inline Rgba orange_edge(float t)   /* top-light -> bottom-deep border gradient */
 { return mix(Rgba { 255, 188, 112, 1.0f }, Rgba { 226, 96, 22, 1.0f }, clampf(t, 0, 1)); }
@@ -679,12 +681,13 @@ static inline void draw_taskbar(Ctx &g, State const &st)
 {
 	float const sh = st.bottom.shown();
 	if (sh <= 0.002f) return;
-	float const full = 28.0f;
-	float const y = 511 + (1.0f - sh) * (full + 8);
-	Rect const r { 0, y, 1090, full };
+	float const full = TASKBAR_H;
+	float const y = TASKBAR_RECT.y + (1.0f - sh) * (full + 8);
+	Rect const r { 0, y, DW, full };
+	float const dx = DW - 1090.0f;               /* the status cluster is anchored to the right edge */
 	Poly p; chamfer_poly(p, g.X(r.x), g.Y(r.y), g.L(r.w), g.L(r.h), 0, g.L(14), 0, 0);
 	fill_poly(g.c, p, VGrad { g.Y(r.y), g.Y(r.y + r.h), Rgba { 14, 15, 18, 0.93f }, Rgba { 8, 9, 11, 0.95f } });
-	g.ln(0, r.y + 0.5f, 1076, r.y + 0.5f, 1.0f, Rgba { 90, 80, 70, 0.55f });
+	g.ln(0, r.y + 0.5f, DW, r.y + 0.5f, 1.0f, Rgba { 90, 80, 70, 0.55f });
 
 	/* small emblem + wordmark */
 	draw_image(g.c, g.a.compass, g.X(10), g.Y(y + 4), g.L(20), g.L(20),
@@ -692,17 +695,17 @@ static inline void draw_taskbar(Ctx &g, State const &st)
 	g.text(g.f.med, 34, y + 6.0f, 10.9f, Pal::white, "HermOS");
 
 	/* status glyphs: display, volume, network */
-	Icon::monitor(g, 843, y + 13.5f, 0.62f, Rgba { 214, 218, 224, 1.0f });
+	Icon::monitor(g, 843 + dx, y + 13.5f, 0.62f, Rgba { 214, 218, 224, 1.0f });
 	{
-		float const vx = 876, vy = y + 13.5f;
+		float const vx = 876 + dx, vy = y + 13.5f;
 		g.rr_fill(vx - 5, vy - 2.6f, 3.4f, 5.2f, 1.0f, Rgba { 214, 218, 224, 1.0f });
 		Poly sp; sp.n = 0; sp.add(g.X(vx - 3), g.Y(vy - 2.8f)); sp.add(g.X(vx + 1.5f), g.Y(vy - 6)); sp.add(g.X(vx + 1.5f), g.Y(vy + 6)); sp.add(g.X(vx - 3), g.Y(vy + 2.8f)); sp.finish();
 		fill_poly(g.c, sp, Solid { Rgba { 214, 218, 224, 1.0f } });
 		g.arcs(vx + 2, vy, 4.2f, -0.8f, 0.8f, 1.1f, Rgba { 214, 218, 224, 1.0f });
 		g.arcs(vx + 2, vy, 7.0f, -0.8f, 0.8f, 1.1f, Rgba { 214, 218, 224, 1.0f });
 	}
-	Icon::network(g, 912, y + 12.5f, 0.5f, Rgba { 214, 218, 224, 1.0f }, 1.9f);
-	g.text(g.f.reg, 939, y + 6.0f, 11.4f, Pal::text, st.clock);
+	Icon::network(g, 912 + dx, y + 12.5f, 0.5f, Rgba { 214, 218, 224, 1.0f }, 1.9f);
+	g.text(g.f.reg, 939 + dx, y + 6.0f, 11.4f, Pal::text, st.clock);
 }
 
 /* --------------------------------------------------------- hideable left dock */
@@ -927,8 +930,8 @@ static inline void render_panels(Canvas &c, Fonts &f, Assets &a, State &st, Hits
 	draw_left_dock(g, st, hits);
 
 	hits.left_grip   = { 0, 120, 6, 220 };
-	hits.bottom_grip = { 380, 516, 330, 20 };
-	if (!st.bottom.visible()) g.rr_fill(520, 524, 50, 4, 2, Rgba { 255, 170, 80, 0.55f });
+	hits.bottom_grip = { DW * 0.5f - 165, DH - 20, 330, 20 };
+	if (!st.bottom.visible()) g.rr_fill(DW * 0.5f - 25, DH - 12, 50, 4, 2, Rgba { 255, 170, 80, 0.55f });
 	if (!st.left.visible())   g.rr_fill(3, 245, 4, 80, 2, Rgba { 255, 170, 80, 0.55f });
 }
 
