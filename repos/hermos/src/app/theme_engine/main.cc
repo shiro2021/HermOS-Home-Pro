@@ -47,6 +47,9 @@ namespace Theme {
 
 		int  _sb_x { 0 }, _sb_y { 0 }, _sb_w { 0 }, _sb_h { 0 };
 
+		/* search / command bar geometry (scale units, published absolute) */
+		int  _sch_x { 0 }, _sch_y { 0 }, _sch_w { 0 }, _sch_h { 0 }, _sch_tip { 0 };
+
 		/* geometry unit: values are fractions of the screen in 1/_scale
 		 * (100 = percent, the legacy unit; 10000 = 0.01 % steps) */
 		int  _scale { 100 };
@@ -125,7 +128,7 @@ namespace Theme {
 		/* parse the HID: "+"-indented tree with "key: value" lines */
 		void _parse(char const *buf, size_t len)
 		{
-			enum Sect { SECT_NONE, SECT_CELL, SECT_SIDEBAR, SECT_ICONS, SECT_SNAP, SECT_PLEFT, SECT_PBOTTOM } sect = SECT_NONE;
+			enum Sect { SECT_NONE, SECT_CELL, SECT_SIDEBAR, SECT_SEARCH, SECT_ICONS, SECT_SNAP, SECT_PLEFT, SECT_PBOTTOM } sect = SECT_NONE;
 			Cell *cur = nullptr;
 			Snap *scur = nullptr;
 
@@ -160,6 +163,7 @@ namespace Theme {
 					                                                 if (_cell_count < MAX_CELLS)
 					                                                     { cur = &_cells[_cell_count++]; cur->id[0] = 0; } }
 					else if (Genode::strcmp(word, "sidebar") == 0) { sect = SECT_SIDEBAR; cur = nullptr; }
+					else if (Genode::strcmp(word, "search") == 0)  { sect = SECT_SEARCH;  cur = nullptr; }
 					else if (Genode::strcmp(word, "layout") == 0)  { sect = SECT_NONE;    cur = nullptr; }
 					else if (Genode::strcmp(word, "colors") == 0)  { sect = SECT_NONE;    cur = nullptr; }
 					else if (Genode::strcmp(word, "icons") == 0)   { sect = SECT_ICONS;   cur = nullptr; }
@@ -210,17 +214,23 @@ namespace Theme {
 				} else if (Genode::strcmp(key, "x") == 0) {
 					if (sect == SECT_CELL && cur) cur->x = val;
 					else if (sect == SECT_SIDEBAR)  _sb_x = val;
+					else if (sect == SECT_SEARCH)   _sch_x = val;
 					else if (sect == SECT_SNAP && scur) scur->x = val;
 				} else if (Genode::strcmp(key, "y") == 0) {
 					if (sect == SECT_CELL && cur) cur->y = val;
 					else if (sect == SECT_SIDEBAR)  _sb_y = val;
+					else if (sect == SECT_SEARCH)   _sch_y = val;
 				} else if (Genode::strcmp(key, "w") == 0) {
 					if (sect == SECT_CELL && cur) cur->w = val;
 					else if (sect == SECT_SIDEBAR)  _sb_w = val;
+					else if (sect == SECT_SEARCH)   _sch_w = val;
 					else if (sect == SECT_SNAP && scur) scur->w = val;
 				} else if (Genode::strcmp(key, "h") == 0) {
 					if (sect == SECT_CELL && cur) cur->h = val;
 					else if (sect == SECT_SIDEBAR)  _sb_h = val;
+					else if (sect == SECT_SEARCH)   _sch_h = val;
+				} else if (Genode::strcmp(key, "tip") == 0 && sect == SECT_SEARCH) {
+					_sch_tip = val;
 				} else if ((Genode::strcmp(key, "chamfer") == 0 || Genode::strcmp(key, "chamfer_percent") == 0) && sect == SECT_CELL && cur) {
 					cur->chamfer = val;
 				} else if (Genode::strcmp(key, "glass") == 0) {
@@ -296,6 +306,13 @@ namespace Theme {
 						xml.attribute("y", _sb_y * _screen_h / _scale);
 						xml.attribute("w", _sb_w * _screen_w / _scale);
 						xml.attribute("h", _sb_h * _screen_h / _scale);
+					});
+					xml.node("search", [&] () {
+						xml.attribute("x",   _sch_x * _screen_w / _scale);
+						xml.attribute("y",   _sch_y * _screen_h / _scale);
+						xml.attribute("w",   _sch_w * _screen_w / _scale);
+						xml.attribute("h",   _sch_h * _screen_h / _scale);
+						xml.attribute("tip", _sch_tip * _screen_w / _scale);
 					});
 					xml.node("panels", [&] () {
 						xml.node("left",   [&] () { xml.attribute("mode", _pl_mode); xml.attribute("size", _pl_size); });

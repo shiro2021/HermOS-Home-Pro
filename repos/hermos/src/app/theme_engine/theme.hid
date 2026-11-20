@@ -57,6 +57,12 @@ theme
   y: 0
   w: 2318
   h: 5352
++ search
+  x: 1869
+  y: 2901
+  w: 3412
+  h: 528
+  tip: 163
 # Plasma-style panels. mode: visible | autohide | hidden. size is in design px.
 # Users change these at runtime with Meta+L (left dock) and Meta+B (bottom bar).
 + panels

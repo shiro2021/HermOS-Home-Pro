@@ -4147,8 +4147,9 @@ namespace Hermos {
 				if (x >= int(m.X(380)) && x < int(m.X(710))) { _sstate.bottom.toggle(); _dirty = true; return true; }
 			}
 
-			/* the single search field */
-			if (m.hit(Scene::SEARCH_RECT, x, y)) {
+			/* the single search field (theme-driven geometry) */
+			Scene::Rect const search_rect { _sstate.search_x, _sstate.search_y, _sstate.search_w, _sstate.search_h };
+			if (m.hit(search_rect, x, y)) {
 				_bar_focused = true; _dirty = true;
 				log("HermOS search field focused");
 				return true;
@@ -4281,6 +4282,15 @@ namespace Hermos {
 					_sb_y = (int)sb.attribute_value("y", (unsigned long)_sb_y);
 					_sb_w = (int)sb.attribute_value("w", (unsigned long)_sb_w);
 					_sb_h = (int)sb.attribute_value("h", (unsigned long)_sb_h);
+				});
+
+				/* the search / command bar rectangle (absolute pixels from the theme) */
+				theme.with_optional_sub_node("search", [&] (Xml_node const &sch) {
+					_sstate.search_x   = (int)sch.attribute_value("x",   (unsigned long)_sstate.search_x);
+					_sstate.search_y   = (int)sch.attribute_value("y",   (unsigned long)_sstate.search_y);
+					_sstate.search_w   = (int)sch.attribute_value("w",   (unsigned long)_sstate.search_w);
+					_sstate.search_h   = (int)sch.attribute_value("h",   (unsigned long)_sstate.search_h);
+					_sstate.search_tip = (int)sch.attribute_value("tip", (unsigned long)_sstate.search_tip);
 				});
 
 				/* Plasma-style panels: visibility mode + thickness (design px) */

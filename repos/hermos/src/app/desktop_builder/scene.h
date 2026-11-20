@@ -123,6 +123,9 @@ struct State
 	int   rail_active   { 0 };             /* Agents */
 	int   hover_win     { -1 };
 	int   order[6]      { 0, 1, 2, 3, 4, 5 };   /* z-order, bottom -> top */
+
+	/* search / command bar geometry (theme-driven, absolute px) */
+	int   search_x { 287 }, search_y { 297 }, search_w { 524 }, search_h { 54 }, search_tip { 25 };
 };
 
 /* design <-> canvas mapping (one uniform scale, letterboxed) */
@@ -140,7 +143,6 @@ static inline Map map_for(int w, int h)
 	return { k, (float(w) - 1536.0f * k) * 0.5f, (float(h) - 1024.0f * k) * 0.5f };
 }
 
-static constexpr Rect SEARCH_RECT  { 287, 297, 524, 54 };
 static constexpr Rect TASKBAR_RECT { 0, 511, 1090, 28 };
 
 /* -------------------------------------------------------------- the Ctx */
@@ -411,31 +413,39 @@ static inline void draw_greeting_search(Ctx &g, State const &st)
 	g.textc(g.f.med, 530, 206, 31.8f, Pal::white, "Good Morning", 0, 0.0f);
 	g.textc(g.f.reg, 530, 252, 15.8f, Rgba { 245, 247, 250, 0.95f }, "How can I help you today?");
 
-	/* the ONE search field (Google-style): hexagonal pill, glass fill, orange edge */
-	float const x = 287, y = 297, w = 524, h = 54, tip = 25;
+	/* the ONE search field (Google-style): hexagonal pill, glass fill, orange edge.
+	 * ImGui layout math: FramePadding.x + ItemSpacing.x + vertical centring.
+	 * Every internal element derives from the bar's bounding box, so the icon,
+	 * text and submit arrow scale if (x,y,w,h) change instead of hardcoded px. */
+	float const x = (float)st.search_x, y = (float)st.search_y, w = (float)st.search_w,
+	           h = (float)st.search_h, tip = (float)st.search_tip;
 	Poly p = search_shape(g, x, y, w, h, tip);
 	glow_poly(g.c, p, g.L(22), g.L(7), Rgba { 255, 120, 24, st.search_focus ? 0.60f : 0.38f });
 	fill_poly(g.c, p, VGrad { g.Y(y), g.Y(y + h), Rgba { 24, 26, 30, 0.90f }, Rgba { 12, 13, 15, 0.92f } });
 	stroke_poly(g.c, p, g.L(st.search_focus ? 2.6f : 2.0f), VGrad { g.Y(y), g.Y(y + h), Rgba { 255, 190, 112, 1.0f }, Rgba { 232, 102, 24, 1.0f } });
 
+	float const fp = 8.0f, is = 8.0f;         /* ImGui FramePadding.x / ItemSpacing.x */
+	float const icon_r = 19.0f, ar = 18.0f;   /* magnifier / submit hexagon radii       */
+	float const by = y + h / 2;               /* vertical centre                       */
+	float const bx = x + fp + icon_r + is;    /* magnifier centre                      */
+
 	/* magnifier button */
-	float const bx = x + 41, by = y + h / 2;
 	Poly hx; hx.n = 0;
-	for (int i = 0; i < 6; ++i) { float const a = PI_ / 6 + float(i) * PI_ / 3; hx.add(g.X(bx + cosf_(a) * 19), g.Y(by + sinf_(a) * 19)); }
+	for (int i = 0; i < 6; ++i) { float const a = PI_ / 6 + float(i) * PI_ / 3; hx.add(g.X(bx + cosf_(a) * icon_r), g.Y(by + sinf_(a) * icon_r)); }
 	hx.finish();
 	fill_poly(g.c, hx, Solid { Rgba { 34, 36, 40, 1.0f } });
 	stroke_poly(g.c, hx, g.L(1.0f), Solid { Rgba { 96, 98, 104, 0.9f } });
 	Icon::search(g, bx, by, 0.78f, Pal::white);
 
-	/* text */
+	/* text: right after the icon + ItemSpacing, vertically centred */
 	char const *t = st.prompt ? st.prompt : "Ask or describe what you want...";
 	Rgba const tc = st.prompt ? Pal::white : Rgba { 214, 218, 224, 0.92f };
-	g.text(g.f.reg, x + 65, y + 18.5f, 12.0f, tc, t);
+	g.text(g.f.reg, bx + icon_r + is, by - 6.0f, 12.0f, tc, t);
 
-	/* submit arrow */
-	float const ax = x + w - 37;
+	/* submit arrow: right-aligned inside FramePadding */
+	float const ax = x + w - fp - ar;         /* submit centre */
 	Poly ah; ah.n = 0;
-	for (int i = 0; i < 6; ++i) { float const a = PI_ / 6 + float(i) * PI_ / 3; ah.add(g.X(ax + cosf_(a) * 18), g.Y(by + sinf_(a) * 18)); }
+	for (int i = 0; i < 6; ++i) { float const a = PI_ / 6 + float(i) * PI_ / 3; ah.add(g.X(ax + cosf_(a) * ar), g.Y(by + sinf_(a) * ar)); }
 	ah.finish();
 	fill_poly(g.c, ah, Solid { Rgba { 24, 25, 28, 1.0f } });
 	stroke_poly(g.c, ah, g.L(1.0f), Solid { Rgba { 110, 108, 104, 0.9f } });
