@@ -539,11 +539,11 @@ namespace Hermos {
 		App_entry _registry[MAX_APPS];
 		int       _registry_count { 0 };
 
-		/* command bar geometry: HARDCODED (X=212, Y=100, W=600, H=50) */
-		int _bar_x()  const { return _w / 2 - _bar_w() / 2; }
-		int _bar_y()  const { return 280; }
-		int _bar_w()  const { return 600; }
-		int _bar_h()  const { return  50; }
+		/* command bar geometry: mockup-measured (pill, left-aligned, x-center 525) */
+		int _bar_x()  const { return 300; }
+		int _bar_y()  const { return 304; }
+		int _bar_w()  const { return 450; }
+		int _bar_h()  const { return  40; }
 		int _bar_cy() const { return _bar_y() + _bar_h() / 2; }
 
 		/* palette */
@@ -593,13 +593,13 @@ namespace Hermos {
 			int const c = Ui::oct_corner_inset(w, h);
 			for (int row = 0; row < h; ++row) {
 				int const ins = Ui::oct_inset_at(row, h, c);
-				for (int t = 0; t < 2; ++t) {
+				for (int t = 0; t < 1; ++t) {
 					_set(x + ins + t, y + row, r, g, b);
 					_set(x + w - 1 - ins - t, y + row, r, g, b);
 				}
 			}
 			for (int col = c; col < w - c; ++col)
-				for (int t = 0; t < 2; ++t) {
+				for (int t = 0; t < 1; ++t) {
 					_set(x + col, y + t, r, g, b);
 					_set(x + col, y + h - 1 - t, r, g, b);
 				}
@@ -1679,6 +1679,8 @@ namespace Hermos {
 		/* hideable bottom panel (slides up when the cursor hits the bottom edge) */
 		bool _bottom_panel_visible { false };
 		int  _panel_y { 0 };          /* top Y of the panel; init to _h in the ctor */
+		/* right sidebar + status bar chrome (F11 toggles) */
+		bool _chrome_hidden { false };
 
 		/* theme state: BYPASSED. These are the hardcoded colors.
 		 * Glass: RGB(13, 18, 30) at alpha 220. Active border: RGB(253, 173, 85).
@@ -2261,6 +2263,8 @@ namespace Hermos {
 
 	int _icx(float px, char const *t)
 	{ return _w / 2 - _font.text_width(px * 1.2f, t) / 2; }
+	int _gcx(float px, char const *t)
+	{ return 530 - _font.text_width(px * 1.2f, t) / 2; }
 
 	void _installer_nav(Surface<Pixel> &s, bool show_back, char const *next, bool next_accent)
 	{
@@ -3443,6 +3447,36 @@ namespace Hermos {
 		_text(s, 24, _h - 32, 12.0f, _muted(), "HermOS Server — minimal GUI");
 	}
 
+	/* Command Bar — mathematical layout (ImGui FramePadding + ItemSpacing).
+	 * Every internal element is derived from the bar's bounding box, never
+	 * hardcoded, so the layout stays proportional at any resolution. */
+	void _draw_command_bar(Surface<Pixel> &s)
+	{
+		int const bx = _bar_x(), by = _bar_y(), bw = _bar_w(), bh = _bar_h();
+		int const cy = by + bh / 2;                 /* vertical centre */
+
+		/* ImGui-derived spacing constants (FramePadding.x + ItemSpacing.x) */
+		int const frame_pad = 8;                    /* FramePadding.x */
+		int const item_gap  = 8;                    /* ItemSpacing.x  */
+		int const font_size = 16;                   /* base font size  */
+		int const icon_w = 20, icon_h = 20;         /* magnifier glyph */
+
+		/* pill frame (mockup: rounded radius = h/2, no border) — solid #13181E */
+		_fill_rrect_glass(bx, by, bw, bh, bh / 2, 19, 24, 30, 255);
+
+		/* 1) magnifying glass: silver lens ring + angled handle */
+		int const mcx = bx + frame_pad + icon_w / 2;
+		_ring(mcx - 2, cy - 2, 6, 200, 197, 193);
+		_line(mcx + 3, cy + 3, mcx + 8, cy + 8, 200, 197, 193);
+
+		/* 2) placeholder text: x = icon.x + icon.w + spacing, y = bar.y + h/2 - font/2 */
+		_text(s, bx + frame_pad + icon_w + item_gap, cy - font_size / 2,
+		      (float)font_size, _prompt_len ? _white() : Color::rgb(176, 176, 176),
+		      _prompt_len ? _prompt : "Ask or describe what you want...");
+
+		/* no right-side chevron button — the mockup has none */
+	}
+
 	void _render()
 		{
 			_blit_wallpaper();
@@ -3451,8 +3485,8 @@ namespace Hermos {
 
 			if (_server_mode) { _render_server(surface); return; }
 
-			/* ---- left dock: always drawn (behind the installer Cell) ---- */
-			{
+			/* ---- left dock (hideable chrome) ---- */
+			if (!_chrome_hidden) {
 				int const dock_w = 80;
 				int const dock_x = 20, dock_y = 250;
 				for (int i = 0; i < _registry_count; ++i) {
@@ -3477,55 +3511,52 @@ namespace Hermos {
 			_draw_text(surface, 62, 20, _white(), "HermOS");
 			_draw_text(surface, 62, 40, _muted(), "A MORE HUMAN COMPUTER");
 
-			/* ---- greeting (disabled: was rendering a white block / duplicating) ---- */
+			/* ---- greeting: "Good Morning" + "How can I help you today?" (x-center 530) ---- */
+			_text(surface, _gcx(28.0f, "Good Morning"), 218, 28.0f, _white(), "Good Morning");
+			_text(surface, _gcx(14.0f, "How can I help you today?"), 262, 14.0f, _white(),
+			      "How can I help you today?");
 
-			/* ---- search bar (pill, centred 50% x 8%) ---- */
-			/* glow removed — it read as a second search bar */
-			_fill_rrect_glass(_bar_x(), _bar_y(), _bar_w(), _bar_h(), _bar_h() / 2, 22, 32, 44, 210);
-			_stroke_rrect(_bar_x(), _bar_y(), _bar_w(), _bar_h(), _bar_h() / 2, _accent_r, _accent_g, _accent_b);
-			_draw_icon("search", _bar_x() + _bar_h() / 2 + 6, _bar_cy());
-			_text(surface, _bar_x() + _bar_h(), _bar_y() + _bar_h() / 2 - 8,
-			      16.0f, _prompt_len ? _white() : _muted(),
-			      _prompt_len ? _prompt : "Ask or describe what you want...");
-			_glyph_chev(_bar_x() + _bar_w() - _bar_h() / 2, _bar_cy());
+			/* ---- command bar (octagon) — mathematical layout ---- */
+			_draw_command_bar(surface);
 
-			/* ---- right panel: Agents & Workers (from the theme_state report) ---- */
-			int const sb_w = _sb_w, sb_h = _sb_h, sb_y = _sb_y;
-			int const sb_x = _sb_x;   /* always visible, matching the concept */
+			/* ---- right panel + status bar (hideable chrome, F11) ---- */
+			if (!_chrome_hidden) {
+				int const sb_w = _sb_w, sb_h = _sb_h, sb_y = _sb_y;
+				int const sb_x = _sb_x;
 
-			_fill_rrect_glass(sb_x, sb_y, sb_w, sb_h, 14, _sidebar_r, _sidebar_g, _sidebar_b, 205);
-			_stroke_rrect(sb_x, sb_y, sb_w, sb_h, 14, _inactive_r, _inactive_g, _inactive_b);
+				_fill_rrect_glass(sb_x, sb_y, sb_w, sb_h, 14, _sidebar_r, _sidebar_g, _sidebar_b, 205);
+				_stroke_rrect(sb_x, sb_y, sb_w, sb_h, 14, _inactive_r, _inactive_g, _inactive_b);
 
-			/* sidebar content drawn by _draw_sidebar_content() over the composited panel */
-			/* ---- status bar (taskbar, docked at the BOTTOM as in the mockup) ---- */
-			int const tb_y = 994;
-			_glass(12, tb_y, _w - 24, 26, 19, 29, 42, 230);
-			_draw_emblem(26, tb_y + 13, 22);
-			_draw_text(surface, 46, tb_y + 6, _white(), "HermOS");
-			/* volume / wifi / battery glyphs (centre, as in the mockup) */
-			_disc(470, tb_y + 13, 4, 160, 180, 205); _ring(470, tb_y + 13, 7, 160, 180, 205);
-			_disc(512, tb_y + 13, 3, 160, 180, 205); _disc(512, tb_y + 13 - 8, 3, 160, 180, 205);
-			_disc(512, tb_y + 13 + 8, 3, 160, 180, 205);
-			_ring(554, tb_y + 13, 6, 160, 180, 205);
-			_draw_text(surface, _w - 210, tb_y + 6, _muted(), _clock());
+				int const tb_y = _h * 49 / 100;
+				_glass(12, tb_y, _w - 24, 26, 19, 29, 42, 230);
+				_draw_emblem(26, tb_y + 13, 22);
+				_draw_text(surface, 46, tb_y + 6, _white(), "HermOS");
+				_disc(470, tb_y + 13, 4, 160, 180, 205); _ring(470, tb_y + 13, 7, 160, 180, 205);
+				_disc(512, tb_y + 13, 3, 160, 180, 205); _disc(512, tb_y + 13 - 8, 3, 160, 180, 205);
+				_disc(512, tb_y + 13 + 8, 3, 160, 180, 205);
+				_ring(554, tb_y + 13, 6, 160, 180, 205);
+				_draw_text(surface, _w - 210, tb_y + 6, _muted(), _clock());
+			}
 
-			/* ---- hideable bottom panel (dock layer: drawn BELOW the Cells) ---- */
-			{
+			/* ---- hideable bottom panel (hideable chrome) ---- */
+			if (!_chrome_hidden) {
 				int const target = _bottom_panel_visible ? (_h - _panel_h) : _h;
 				if (_panel_y < target)      _panel_y = min(_panel_y + 20, target);
 				else if (_panel_y > target) _panel_y = max(_panel_y - 20, target);
 				if (_panel_y < _h) _panel(surface, _panel_y);
 			}
 
-			/* ---- six floating Cells, drawn in z-order (bottom -> top) ---- */
-			{
+			/* ---- six floating Cells (hideable chrome) ---- */
+			if (!_chrome_hidden) {
 				char const *titles[6] = { "Welcome to HermOS", "System", "Files",
 				                          "Hydroponics Agent", "Create a New Worker",
 				                          "Software & Updates" };
 
 				/* Step 5b: the sidebar panel sits BEHIND the cells */
-				_blit_sidebar();
-				_draw_sidebar_content(surface);
+				if (!_chrome_hidden) {
+					_blit_sidebar();
+					_draw_sidebar_content(surface);
+				}
 
 				for (int oi = 0; oi < NUM_CELLS; ++oi) {
 					int const i = _draw_order[oi];
@@ -4140,6 +4171,11 @@ namespace Hermos {
 						case Input::KEY_R:        _quick_tile(9);  return;
 						default: break;
 						}
+					}
+					if (key == Input::KEY_F11) {
+						_chrome_hidden = !_chrome_hidden;
+						_dirty = true;
+						return;
 					}
 					if (key == Input::BTN_LEFT) {
 						_click(_pointer_x, _pointer_y);

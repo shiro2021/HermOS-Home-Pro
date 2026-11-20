@@ -31,8 +31,26 @@ inline void *_stbtt_memset(void *s, int c, size_t n)
 }
 #define STBTT_memset      _stbtt_memset
 #define STBTT_assert(x)   ((void)0)
-#define STBTT_malloc(x,u) ((void)(u), nullptr)
-#define STBTT_free(x,u)   ((void)(u), (void)(x))
+/* No libc malloc in the desktop, so stb_truetype's transient allocations
+ * (glyph outline vertices, rasterizer edge heap, scanline) are served from a
+ * fixed bump pool. _stbtt_used is reset before each glyph in draw_text(). */
+static unsigned char _stbtt_pool[65536];
+static size_t       _stbtt_used = 0;
+static void *_stbtt_malloc(size_t n, void *u)
+{
+	(void)u;
+	n = (n + 7) & ~7;
+	if (_stbtt_used + n > sizeof(_stbtt_pool)) return nullptr;
+	void *p = _stbtt_pool + _stbtt_used;
+	_stbtt_used += n;
+	return p;
+}
+static void _stbtt_free(void *p, void *u)
+{
+	(void)p; (void)u;
+}
+#define STBTT_malloc(x,u) _stbtt_malloc(x,u)
+#define STBTT_free(x,u)   _stbtt_free(x,u)
 #include <stb_truetype.h>
 
 #include <os/surface.h>
@@ -128,6 +146,7 @@ class FontRenderer
 				int const gw = x1 - x0, gh = y1 - y0;
 
 				if (gw > 0 && gh > 0 && gw <= 128 && gh <= 128) {
+					_stbtt_used = 0; /* fresh bump pool for this glyph */
 					stbtt_MakeCodepointBitmap(&_info, bitmap, gw, gh, gw, scale, scale, cp);
 					_blit_glyph(base, W, H, pen_x + x0, baseline + y0, gw, gh, bitmap, c);
 				}
