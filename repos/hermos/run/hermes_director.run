@@ -1,0 +1,69 @@
+#
+# HermOS Hermes director integration test
+#
+# Standalone version of the desktop composition: director + worker sandbox +
+# integration client. Useful as a fast gate that does not build the shell,
+# the drivers subsystem or the installer.
+#
+
+# UEFI boot needs bender's 'serial_fallback' for a headless serial console.
+if {[have_include image/iso] || [have_include image/disk]} {
+	proc boot_output { } { return "serial serial_fallback" }
+}
+
+build { core init lib/ld app/hermes_director app/hermes_worker test/hermes_director_client server/report_rom timer }
+
+create_boot_directory
+
+install_config {
+config
++ parent-provides
+  + service ROM
+  + service CPU
+  + service RM
+  + service PD
+  + service LOG
+
++ default-route | + any-service | + parent
++ default | caps: 100 | ram: 2M
+
++ start timer
+  + provides | + service Timer
+
++ start report_rom | ram: 2M
+  + provides
+    + service Report
+    + service ROM
+  + config | verbose: no
+    + policy | label: workers -> config | report: hermes_director -> workers
+
++ start hermes_director | caps: 200 | ram: 8M
+  + provides | + service Hermes
+  + route
+    + service Report | + child report_rom
+    + any-service     | + parent
+
++ start workers | caps: 400 | ram: 32M
+  + binary init
+  + route
+    + service ROM | label: config | + child report_rom
+    + service Timer | + child timer
+    + service Hermes | + child hermes_director
+    + any-service     | + parent
+
++ start hermes_director_client | caps: 120 | ram: 4M
+  + route
+    + service Hermes | + child hermes_director
+    + service Timer  | + child timer
+    + any-service     | + parent
+-
+}
+
+if {[cmd_arg --hermos-build-only no] eq "yes"} {
+	build_boot_image [build_artifacts]
+	puts "HermOS director test image built; QEMU skipped by --hermos-build-only"
+} else {
+	build_boot_image [build_artifacts]
+	run_genode_until {\[hermes_test\] PASS} 120
+	puts "Hermes director integration test passed"
+}

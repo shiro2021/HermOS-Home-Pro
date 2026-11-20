@@ -1,0 +1,10 @@
+[package]
+name = "hermes-agent"
+version = "0.1.0"
+edition = "2021"
+
+# Built for Genode's custom `x86_64-unknown-genode` target profile (a
+# FreeBSD-libc mirror with emulated TLS) via Goa + `cargo -Z build-std`
+# on a nightly toolchain.  See goa/share/goa/doc for the build system notes.
+
+[dependencies]

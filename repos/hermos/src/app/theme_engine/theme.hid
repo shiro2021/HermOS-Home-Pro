@@ -1,0 +1,68 @@
+# HermOS theme — "Shiro"
+# Geometry is authored against the 1536x1024 concept sheet and stored in
+# 1/10000 of the screen (scale: 10000), so it is resolution independent.
+theme
++ name: Shiro
++ scale: 10000
++ colors
+  glass: 13,15,17,220
+  active: 240,183,115,255
+  inactive: 240,183,115,255
+  paused: 150,150,150,255
++ layout
+  + slot
+    id: 0
+    x: 143
+    y: 5420
+    w: 3288
+    h: 2393
+    chamfer: 13
+  + slot
+    id: 1
+    x: 3613
+    y: 5469
+    w: 2930
+    h: 2354
+    chamfer: 13
+  + slot
+    id: 2
+    x: 6934
+    y: 5488
+    w: 2930
+    h: 2354
+    chamfer: 13
+  + slot
+    id: 3
+    x: 78
+    y: 7959
+    w: 3678
+    h: 2012
+    chamfer: 13
+  + slot
+    id: 4
+    x: 3932
+    y: 7959
+    w: 2422
+    h: 1992
+    chamfer: 13
+  + slot
+    id: 5
+    x: 6517
+    y: 7949
+    w: 3327
+    h: 2021
+    chamfer: 13
++ sidebar
+  x: 7682
+  y: 0
+  w: 2318
+  h: 5352
+# Plasma-style panels. mode: visible | autohide | hidden. size is in design px.
+# Users change these at runtime with Meta+L (left dock) and Meta+B (bottom bar).
++ panels
+  + left
+    mode: autohide
+    size: 78
+  + bottom
+    mode: visible
+    size: 28

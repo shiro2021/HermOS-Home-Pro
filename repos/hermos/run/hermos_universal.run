@@ -1,0 +1,465 @@
+#
+# HermOS v18 — monolithic desktop (desktop_builder)
+#
+# No Nitpicker, no Capture, no GUI server. hermos_fb maps the boot framebuffer
+# (set by GRUB's UEFI GOP at the monitor's native mode) straight to the screen
+# and desktop_builder paints the octagonal Cells into it.
+#
+# Universal generic-PC driver stack:
+#   acpi -> pci_decode -> platform               (device discovery)
+#   fb    = hermos_fb  (generic UEFI-GOP framebuffer -> Framebuffer session)
+#   ps2 + usb(xHCI) + usb_hid -> event_filter    (merged input)
+#   ahci (SATA) + nvme (M.2)                     (storage)
+#   nic (ipxe)                                   (network)
+#
+
+if {[have_include image/iso] || [have_include image/disk]} {
+	proc boot_output { } { return "serial serial_fallback" }
+}
+
+assert {[have_recipe pkg/[drivers_interactive_pkg]]} \
+	"Recipe for 'pkg/[drivers_interactive_pkg]' not available."
+
+create_boot_directory
+
+import_from_depot [depot_user]/pkg/[drivers_interactive_pkg] \
+                  [depot_user]/pkg/terminal \
+                  [depot_user]/src/init \
+                  [depot_user]/src/bash \
+                  [depot_user]/src/coreutils \
+                  [depot_user]/src/vfs \
+                  [depot_user]/src/vfs_pipe \
+                  [depot_user]/src/vfs_report \
+                  [depot_user]/src/fs_rom \
+                  [depot_user]/src/posix
+
+build {
+	core init lib/ld
+	app/desktop_builder driver/framebuffer/hermos_fb
+	app/hermes_agent_cpp
+	app/menu_view
+	app/theme_engine
+	app/bottom_dock
+	app/agents_sidebar
+	app/hermos_files
+	lib/stdcxx lib/libc lib/vfs lib/libm
+	lib/libpng lib/blit lib/file
+	server/nic_router driver/nic lib/vfs_lwip lib/curl lib/libssh lib/libssl lib/libcrypto lib/zlib
+	server/event_to_input server/report_rom timer
+	driver/rtc
+	driver/ahci
+	driver/nvme
+	test/nitpicker
+}
+
+install_config {
+config
++ parent-provides
+  + service ROM
+  + service CPU
+  + service RM
+  + service PD
+  + service LOG
+  + service IO_MEM
+  + service IO_PORT
+  + service IRQ
+  + service Rtc
+
++ default-route | + any-service | + parent
++ default | caps: 100 | ram: 2M
+
++ start timer
+  + provides | + service Timer
+  + route | + any-service | + parent
+
++ start event_to_input | caps: 160 | ram: 4M
+  + provides
+    + service Event
+    + service Input
+  + route
+    + any-service | + parent
+
++ start pc_rtc | caps: 100 | ram: 2M
+  + provides | + service Rtc
+  + route
+    + service IO_PORT | + parent
+    + any-service | + parent
+
++ start drivers | caps: 2500 | ram: 160M | managing_system: yes
+  + binary init
+  + provides
+    + service Block
+    + service Framebuffer
+  + route
+    + service ROM | label: config | + parent | label: hermos_drivers.config
+    + service Timer | + child timer
+    + service Event | + child event_to_input
+    + service Uplink | + child nic_router
+    + any-service   | + parent
+
++ start nic_router | caps: 200 | ram: 10M
+  + provides
+    + service Nic
+    + service Uplink
+  + config | verbose_domain_state: yes
+    + policy | label_prefix: hermes_agent | domain: downlink
+    + policy | label_prefix: drivers | domain: uplink
+    + domain uplink
+      + nat | domain: downlink | tcp-ports: 16384 | udp-ports: 16384 | icmp-ids: 16384
+    + domain downlink | interface: 10.0.3.1/24
+      + dhcp-server | ip_first: 10.0.3.2 | ip_last: 10.0.3.2 | dns_config_from: uplink
+      + tcp | dst: 0.0.0.0/0 | + permit-any | domain: uplink
+      + udp | dst: 0.0.0.0/0 | + permit-any | domain: uplink
+      + icmp | dst: 0.0.0.0/0 | domain: uplink
+  + route
+    + service Timer | + child timer
+    + any-service | + parent
+
++ start report_rom | ram: 2M
+  + provides
+    + service Report
+    + service ROM
+  + config | verbose: yes
+    + policy | label: apps -> config | report: desktop_builder -> apps
+    + policy | label: apps -> state  | report: apps -> state
+    + policy | label: hermes_agent -> ui_intent     | report: desktop_builder -> ui_intent
+    + policy | label: desktop_builder -> ai_command | report: hermes_agent -> ai_command
+    + policy | label: desktop_builder -> theme_state | report: desktop_builder -> theme_state
+    + policy | label: theme_engine -> screen_state | report: desktop_builder -> screen_state
+    + policy | label: desktop_builder -> dock_state | report: bottom_dock -> dock_state
+  + route
+    + any-service | + parent
+
++ start bottom_dock | caps: 200 | ram: 8M
+  + route
+    + service Input  | + child event_to_input
+    + service Report | + child report_rom
+    + any-service | + parent
+  + config
+    + dock | height: 100 | trigger: 2
+
++ start desktop_builder | caps: 1000 | ram: 96M
+  + provides | + service Gui
+  + route
+    + service Framebuffer | + child drivers
+    + service Input       | + child event_to_input
+    + service Report      | + child report_rom
+    + service ROM | label: ai_command | + child report_rom
+    + service ROM | label: theme_state | + child report_rom
+    + service ROM | label: dock_state | + child report_rom
+    + service Rtc         | + child pc_rtc
+    + service Timer       | + child timer
+    + service Block       | + child drivers
+    + any-service         | + parent
+  + config
+    + vfs
+      + dir dev
+        + log
+        + null
+      + dir assets
+        + rom Roboto-Regular.ttf
+        + rom icon_search.png
+        + rom icon_folder.png
+        + rom icon_mic.png
+        + rom icon_user.png
+        + rom icon_terminal.png
+        + rom icon_close.png
+        + rom icon_minimize.png
+        + rom icon_pause.png
+        + rom wallpaper.png
+        + rom logo.png
+        + rom icon_leaf.png
+      + dir apps
+        + rom registry
+      + dir install
+        + rom hermos-system.img
+
++ start hermes_agent | caps: 1500 | ram: 64M
+  + binary hermes_agent_cpp
+  + route
+    + service ROM | label: ui_intent | + child report_rom
+    + service Report | + child report_rom
+    + service ROM | label_suffix: .lib.so | + parent
+    + service Timer | + child timer
+    + service Nic | + child nic_router
+    + service Rtc | + child pc_rtc
+    + any-service | + parent
+  + config
+    + libc | stdout: /dev/log | stderr: /dev/log | socket: /socket | rng: /dev/random | pipe: /pipe | rtc: /dev/rtc
+    + vfs
+      + dir dev
+        + log
+        + null
+        + rtc
+        + inline random | : 0123456789012345678901234567890123456789
+      + dir socket
+        + lwip | dhcp: yes
+      + dir pipe
+        + pipe
+      + dir ui
+        + rom | name: ui_intent | label: ui_intent | binary: no
+      + dir ai
+        + report | name: ai_command | label: ai_command | buffer: 4096
+        + inline mykee.key | : sk-0dc7c44723d84f30a4f390170e0ab4d3
+
++ start apps | caps: 6000 | ram: 300M
+  + binary init
+  + route
+    + service ROM | label: config | + child report_rom
+    + service Report | + child report_rom
+    + service Timer | + child timer
+    + service Gui | + child desktop_builder
+    + service Rtc | + child pc_rtc
+    + any-service | + parent
+-
+}
+
+#
+# drivers subsystem: the interactive driver stack without block/network.
+# usb_hid submits its event stream straight to event_to_input (label "usb"),
+# which turns it into an Input session for desktop_builder.
+#
+set drivers_config_fd [open "bin/hermos_drivers.config" "WRONLY CREAT TRUNC"]
+puts $drivers_config_fd {
+config
++ parent-provides
+  + service IRQ
+  + service IO_MEM
+  + service IO_PORT
+  + service ROM
+  + service PD
+  + service RM
+  + service CPU
+  + service LOG
+  + service Timer
+  + service Event
+  + service Uplink
+
++ default | caps: 300 | ram: 32M
+
++ service Nic | + default-policy | + child nic
++ service Block | + default-policy | + child ahci
++ service Framebuffer | + default-policy | + child fb
+
++ start acpi | caps: 250 | ram: 4M
+  + route
+    + service IO_MEM | + parent
+    + service LOG    | + parent
+    + service PD     | + parent
+    + service RM     | + parent
+    + service CPU    | + parent
+    + service ROM    | + parent
+    + service Report | + child report_rom
+
++ start report_rom | caps: 100 | ram: 2M
+  + provides
+  | + service ROM
+  | + service Report
+  + config
+  | + policy | label: pci_decode -> system | report: acpi -> acpi
+  | + policy | label: platform -> devices  | report: pci_decode -> devices
+  | + policy | label: usb_hid -> report    | report: usb -> devices
+  + route
+    + service LOG | + parent
+    + service PD  | + parent
+    + service CPU | + parent
+    + service ROM | + parent
+
++ start pci_decode | caps: 100 | ram: 2M
+  + route
+    + service Report              | + child report_rom
+    + service ROM | label: system | + child report_rom
+    + service IO_MEM              | + parent
+    + service LOG                 | + parent
+    + service PD                  | + parent
+    + service RM                  | + parent
+    + service CPU                 | + parent
+    + service ROM                 | + parent
+
++ start platform | caps: 200 | ram: 3M | managing_system: yes
+  + provides
+  | + service Dma
+  | + service Platform
+  + route
+  | + service ROM | label: devices | + child report_rom
+  | + service Report               | + child report_rom
+  | + service IRQ                  | + parent
+  | + service IO_MEM               | + parent
+  | + service IO_PORT              | + parent
+  | + service ROM                  | + parent
+  | + service PD                   | + parent
+  | + service CPU                  | + parent
+  | + service LOG                  | + parent
+  | + service Timer                | + parent
+  + config
+    + report | devices: yes
+    + policy | label_prefix: ps2  | + device ps2
+    + policy | label_prefix: usb  | info: yes | + pci | class: USB
+    + policy | label_prefix: nic  | info: yes | + pci | class: ETHERNET
+    + policy | label_prefix: ahci | + pci | class: AHCI
+    + policy | label_prefix: nvme | + pci | class: NVME
+
++ start fb | caps: 150 | ram: 20M
+  + binary hermos_fb
+  + provides | + service Framebuffer
+  + route
+    + service IO_MEM | + parent
+    + service ROM    | + parent
+    + service PD     | + parent
+    + service CPU    | + parent
+    + service LOG    | + parent
+    + service Timer  | + parent
+
++ start ps2 | caps: 100 | ram: 1280K
+  + config
+  + route
+    + service Dma      | + child platform
+    + service Platform | + child platform
+    + service Event    | + child event_filter | label: ps2
+    + service ROM      | + parent
+    + service PD       | + parent
+    + service CPU      | + parent
+    + service LOG      | + parent
+    + service Timer    | + parent
+
++ start usb | caps: 200 | ram: 16M
+  + binary pc_usb_host
+  + provides | + service Usb
+  + config | bios_handoff: no
+  | + report | devices: yes
+  | + policy | label_prefix: usb_hid | + device | class: 0x3
+  + route
+    + service Report | label: devices | + child report_rom
+    + any-service
+      + parent
+      + any-child
+
++ start usb_hid | caps: 180 | ram: 10M
+  + route
+    + service ROM | label: report | + child report_rom
+    + service Event | + child event_filter | label: usb
+    + service Usb   | + child usb
+    + any-service
+      + parent
+      + any-child
+
++ start event_filter | caps: 90 | ram: 1280K
+  + provides | + service Event
+  + route
+    + service ROM | label: config | + parent | label: event_filter.config
+    + service Event               | + parent
+    + service ROM                 | + parent
+    + service PD                  | + parent
+    + service CPU                 | + parent
+    + service LOG                 | + parent
+    + service Timer               | + parent
+
++ start mac_report_rom
+  + binary report_rom
+  + provides
+    + service ROM
+    + service Report
+  + config | verbose: yes
+    + policy | label: nic -> devices | report: nic -> devices
+  + route
+    + service LOG | + parent
+    + service PD  | + parent
+    + service CPU | + parent
+    + service ROM | + parent
+
++ start nic | caps: 250 | ram: 10M
+  + binary ipxe_nic
+  + route
+    + service Dma      | + child platform
+    + service Platform | + child platform
+    + service ROM      | + parent
+    + service PD       | + parent
+    + service RM       | + parent
+    + service CPU      | + parent
+    + service LOG      | + parent
+    + service Timer    | + parent
+    + service Uplink   | + parent
+    + service Report   | + child mac_report_rom
+  + config
+    + report | mac_address: yes
+
++ start ahci | caps: 200 | ram: 12M
+  + provides | + service Block
+  + config | atapi: no
+    + report | ports: yes
+    + default-policy | device: 0 | writeable: yes
+  + route
+    + service Dma      | + child platform
+    + service Platform | + child platform
+    + service Report   | + child report_rom
+    + any-service
+      + parent
+      + any-child
+
++ start nvme | caps: 200 | ram: 12M
+  + provides | + service Block
+  + config
+    + report | devices: yes
+  + route
+    + service Dma      | + child platform
+    + service Platform | + child platform
+    + service Report   | + child report_rom
+    + service ROM      | + parent
+    + service PD       | + parent
+    + service CPU      | + parent
+    + service LOG      | + parent
+    + service Timer    | + parent
+-
+}
+close $drivers_config_fd
+
+# (terminal sandbox + apps.config removed — cells now boot empty and are
+#  populated on demand by desktop_builder via its own apps report)
+
+#
+# HermOS terminal config: monospace font + an initial size that fits a Cell.
+# (kept — referenced by desktop_builder's _emit_terminal_stack when the user
+#  launches the Terminal app from the dock)
+#
+set term_config_fd [open "bin/hermos_terminal.config" "WRONLY CREAT TRUNC"]
+puts $term_config_fd {
+config
++ initial | width: 560 | height: 340
++ vfs
+  + rom VeraMono.ttf
+  + dir font
+    + dir monospace
+      + ttf regular | path: /VeraMono.ttf | size_px: 14
+-
+}
+close $term_config_fd
+
+# The C++ agent (hermes_agent_cpp) is built by the Genode build system and is
+# included in build_artifacts; no manual copy is needed.
+
+# package the stb UI assets (font + icons) as ROMs mounted at /assets
+set asset_dir [genode_dir]/repos/hermos/src/app/desktop_builder/assets
+exec cp $asset_dir/Roboto-Regular.ttf bin/Roboto-Regular.ttf
+exec cp $asset_dir/search.png bin/icon_search.png
+exec cp $asset_dir/folder.png bin/icon_folder.png
+exec cp $asset_dir/mic.png bin/icon_mic.png
+exec cp $asset_dir/user.png bin/icon_user.png
+exec cp $asset_dir/terminal.png bin/icon_terminal.png
+exec cp $asset_dir/icon_close.png bin/icon_close.png
+exec cp $asset_dir/icon_minimize.png bin/icon_minimize.png
+exec cp $asset_dir/icon_pause.png bin/icon_pause.png
+exec cp $asset_dir/wallpaper.png bin/wallpaper.png
+exec cp $asset_dir/logo.png bin/logo.png
+exec cp $asset_dir/icon_leaf.png bin/icon_leaf.png
+exec cp $asset_dir/apps.registry bin/registry
+exec cp $asset_dir/files_menu.xml bin/files_menu
+exec cp [genode_dir]/repos/hermos/src/app/theme_engine/theme.hid bin/theme.hid
+
+set boot_modules [list {*}[build_artifacts] hermos_drivers.config hermos_terminal.config Roboto-Regular.ttf icon_search.png icon_folder.png icon_mic.png icon_user.png icon_terminal.png icon_close.png icon_minimize.png icon_pause.png wallpaper.png logo.png icon_leaf.png registry files_menu menu_view_style.tar theme.hid hermos-system.img]
+build_boot_image $boot_modules
+
+if {[cmd_arg --hermos-build-only no] eq "yes"} {
+	puts "HermOS universal image built; QEMU skipped by --hermos-build-only"
+} else {
+	run_genode_until forever
+}
