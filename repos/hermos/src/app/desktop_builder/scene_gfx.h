@@ -57,15 +57,58 @@ static inline Rgba with_a(Rgba c, float a) { return { c.r, c.g, c.b, c.a * a }; 
 static inline Rgba mix(Rgba x, Rgba y, float t)
 { return { lerpf(x.r, y.r, t), lerpf(x.g, y.g, t), lerpf(x.b, y.b, t), lerpf(x.a, y.a, t) }; }
 
+/*
+ * The OS-wide ink: one palette for active and inactive elements, set in theme.hid (`+ ink`).
+ * Every accent-coloured pixel (the orange family) goes through map(): an active element gets
+ * the theme's accent, an inactive one the carbon gray, with the original's brightness kept.
+ * Bright neutral pixels (text, lines) of an inactive element are dimmed toward carbon text.
+ * With the default accent the active mapping is the identity.
+ */
+struct Ink
+{
+	Rgba  ref      { 255, 156, 48, 1.0f };      /* the orange the artwork is drawn in */
+	Rgba  accent   { 255, 156, 48, 1.0f };      /* active accent */
+	Rgba  carbon   { 138, 143, 150, 1.0f };     /* inactive accent (carbon gray) */
+	Rgba  carbon_text { 168, 172, 178, 1.0f };  /* inactive text and lines */
+	float dim      { 0.40f };                   /* how far inactive neutrals move toward carbon_text */
+
+	void map(bool inactive, float &r, float &g, float &b) const
+	{
+		float const mx = maxf(r, maxf(g, b)), mn = minf(r, minf(g, b)), d = mx - mn;
+		if (mx <= 1.0f) return;
+		float const sat = d / mx;
+		bool accent_px = false;
+		if (d > 1.0f && r >= g && g >= b && sat >= 0.28f) {
+			float const hue = 60.0f * (g - b) / d;           /* degrees, red = 0, yellow = 60 */
+			accent_px = hue >= 16.0f && hue <= 48.0f;
+		}
+		float const lum = 0.30f * r + 0.59f * g + 0.11f * b;
+		if (accent_px) {
+			if (!inactive) {
+				r = clampf(r * accent.r / ref.r, 0, 255); g = clampf(g * accent.g / ref.g, 0, 255);
+				b = clampf(b * accent.b / ref.b, 0, 255);
+			} else {
+				float const k = lum / (0.30f * ref.r + 0.59f * ref.g + 0.11f * ref.b);
+				r = clampf(carbon.r * k, 0, 255); g = clampf(carbon.g * k, 0, 255); b = clampf(carbon.b * k, 0, 255);
+			}
+		} else if (inactive && sat < 0.2f && lum > 140.0f) {
+			r += (carbon_text.r - r) * dim; g += (carbon_text.g - g) * dim; b += (carbon_text.b - b) * dim;
+		}
+	}
+};
+
 struct Canvas
 {
 	uint32_t *px;     /* 0x00RRGGBB (Genode Pixel_rgb888 layout) */
 	int       w, h;
+	Ink const *ink      { nullptr };            /* null = paint colours as given (images, wallpaper) */
+	bool       inactive { false };              /* paint the current element with the inactive ink */
 };
 
 static inline void put(Canvas &c, int x, int y, float r, float g, float b, float a)
 {
 	if (x < 0 || y < 0 || x >= c.w || y >= c.h || a <= 0.002f) return;
+	if (c.ink) c.ink->map(c.inactive, r, g, b);
 	uint32_t &d = c.px[y * c.w + x];
 	if (a > 0.998f) {
 		d = (uint32_t(clampf(r, 0, 255) + 0.5f) << 16) | (uint32_t(clampf(g, 0, 255) + 0.5f) << 8)
@@ -317,6 +360,8 @@ template <class SD>
 static inline void draw_image(Canvas &c, Image const &im, float x, float y, float w, float h,
                               SD sd, float alpha = 1.0f)
 {
+	Ink const *const saved_ink = c.ink;          /* pictures keep their own colours */
+	c.ink = nullptr;
 	float const sx = float(im.w) / w, sy = float(im.h) / h;
 	int const taps = (sx > 1.5f || sy > 1.5f) ? 3 : 1;
 	fill_sd(c, x, y, x + w, y + h, sd, [&](float px, float py) {
@@ -329,6 +374,7 @@ static inline void draw_image(Canvas &c, Image const &im, float x, float y, floa
 		}
 		return Rgba { acc.r / 9, acc.g / 9, acc.b / 9, acc.a / 9 * alpha };
 	});
+	c.ink = saved_ink;
 }
 
 static inline void draw_image_rect(Canvas &c, Image const &im, float x, float y, float w, float h, float alpha = 1.0f)

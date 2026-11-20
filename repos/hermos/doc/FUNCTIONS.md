@@ -60,6 +60,7 @@ function carries one of these marks:
 | Window maximise (uses the Plasma-style client area) | BUILT | |
 | Cell drag by the title strip | VERIFIED | Moves; a grab in the top 10 px is an edge resize, not a move. |
 | Cell edge resize, snap to screen edges | BUILT | Resize starts (edge detection verified); snap not re-tested. |
+| OS-wide ink (`theme.hid` `+ ink`): active accent vs carbon-gray inactive | VERIFIED | One mapping in the canvas recolours every accent-coloured pixel (shapes, text, icons, glows) of an inactive Cell to carbon gray and dims its bright text; pictures keep their colours. Changing `accent` recolours every active element. Panels, rail and dock are always drawn active; their own selected/unselected states are separate. |
 | Hosted Cell: title, minimise, maximise, close; opaque; true z-order | VERIFIED | Strip geometry derives from the Cell's own size. Minimise and taskbar restore tested; restore no longer reopens the mock-up Cells. |
 | Hosted app follows its Cell's size (Gui `info` ROM `xpos ypos width height`, signalled on change) | VERIFIED | Terminal re-lays out to the Cell at launch and on maximise (1:1, no stretching). While a drag is running the old buffer is stretched; the new size is applied on release. Apps that ignore the info ROM (Files) still stretch. |
 | Tiling and quick-tile (`Meta+T`, `Meta+arrows`, `Home/End/PgUp/PgDn`, `F`, `R`) | BUILT | Legacy code, untested. |

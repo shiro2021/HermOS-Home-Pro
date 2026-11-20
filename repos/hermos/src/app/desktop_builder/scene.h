@@ -165,6 +165,7 @@ struct FrameStyle
 struct State
 {
 	FrameStyle frame { };
+	Ink        ink   { };
 	CmdBar   cmdbar { };
 	SysInfo  sys { };
 	AppEntry apps[MAX_APP_ENTRIES] { };
@@ -908,6 +909,7 @@ static inline int top_split(State const &st)
  * the search text or the clock change. */
 static inline void render_base(Canvas &c, Fonts &f, Assets &a, State &st, Hits &hits)
 {
+	c.ink = &st.ink; c.inactive = false;
 	Ctx g = make_ctx(c, f, a);
 	draw_wallpaper(g);
 	draw_header(g);
@@ -929,6 +931,7 @@ static inline void render_base(Canvas &c, Fonts &f, Assets &a, State &st, Hits &
  * Redrawn every frame because hosted apps change continuously. */
 static inline void render_top(Canvas &c, Fonts &f, Assets &a, State &st, void (*blit)(void *, int), void *ctx)
 {
+	c.ink = &st.ink; c.inactive = false;
 	Ctx g = make_ctx(c, f, a);
 	for (int oi = top_split(st); oi < 6; ++oi) {
 		int const i = st.order[oi];
@@ -942,6 +945,7 @@ static inline void render_top(Canvas &c, Fonts &f, Assets &a, State &st, void (*
  * their reveal grips. Cheap enough to redraw every animation frame. */
 static inline void render_panels(Canvas &c, Fonts &f, Assets &a, State &st, Hits &hits)
 {
+	c.ink = &st.ink; c.inactive = false;
 	Ctx g = make_ctx(c, f, a);
 	draw_taskbar(g, st);
 	draw_left_dock(g, st, hits);

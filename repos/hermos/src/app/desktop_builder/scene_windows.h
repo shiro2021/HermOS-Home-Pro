@@ -451,8 +451,12 @@ static inline void draw_hosted_strip(Ctx &g, int i, WinRect const &r, bool activ
 
 /* ------------------------------------------------------------------ dispatch */
 
+/* an inactive Cell, frame and content, is painted with the inactive ink */
+struct InkScope { Canvas &c; bool prev; InkScope(Canvas &cv, bool inactive) : c(cv), prev(cv.inactive) { c.inactive = inactive; } ~InkScope() { c.inactive = prev; } };
+
 static inline void draw_window(Ctx &g, int i, WinRect const &r, bool active, bool hosted, State const &st)
 {
+	InkScope ink_scope(g.c, !active);
 	WinRef const &ref = WIN_REF[i];
 	WinGeom wg { r.x, r.y, r.w, r.h, minf(r.w / ref.w, r.h / ref.h) };
 	window_frame(g, wg, active, hosted, st.frame);

@@ -3866,6 +3866,24 @@ namespace Hermos {
 					_scene_valid = false;
 				});
 
+				/* OS-wide ink (theme.hid `+ ink`) */
+				theme.with_optional_sub_node("ink", [&] (Xml_node const &n) {
+					Scene::Ink &ink = _sstate.ink;
+					auto col = [&] (char const *k, Scene::Rgba dflt) {
+						String<16> const v = n.attribute_value(k, String<16>(""));
+						int c[3] { 0, 0, 0 }; int idx = 0; bool ok = false;
+						for (char const *p = v.string(); *p && idx < 3; ++p) {
+							if (*p >= '0' && *p <= '9') { c[idx] = c[idx] * 10 + (*p - '0'); ok = true; }
+							else if (*p == ',') ++idx;
+						}
+						return ok && idx == 2 ? Scene::Rgba { float(c[0]), float(c[1]), float(c[2]), 1.0f } : dflt; };
+					ink.accent      = col("accent",      ink.accent);
+					ink.carbon      = col("carbon",      ink.carbon);
+					ink.carbon_text = col("carbon_text", ink.carbon_text);
+					ink.dim         = float(n.attribute_value("carbon_dim", 40UL)) / 100.0f;
+					_scene_valid = false;
+				});
+
 				/* Plasma-style panels: visibility mode + thickness (design px) */
 				theme.with_optional_sub_node("panels", [&] (Xml_node const &panels) {
 					auto apply = [&] (Scene::Panel &pn, Xml_node const &n) {

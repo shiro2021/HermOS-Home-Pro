@@ -96,6 +96,15 @@ theme
   active_b: 226,92,20
   carbon_a: 92,96,102
   carbon_b: 48,51,56
+# OS-wide ink. Every accent-coloured (orange family) pixel is painted with `accent` when its
+# element is active and with `carbon` (a gray) when it is inactive; brightness is kept.
+# Bright neutral pixels (text, lines) of an inactive element move carbon_dim percent toward
+# carbon_text. Pictures (wallpaper, photos, logos) are never recoloured.
++ ink
+  accent: 255,156,48
+  carbon: 138,143,150
+  carbon_text: 168,172,178
+  carbon_dim: 40
 # Plasma-style panels. mode: visible | autohide | hidden. size is in design px.
 # Users change these at runtime with Meta+L (left dock) and Meta+B (bottom bar).
 + panels
