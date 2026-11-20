@@ -46,6 +46,7 @@ build {
 	driver/rtc
 	driver/ahci
 	driver/nvme
+	server/part_block lib/vfs_rump
 	test/nitpicker
 }
 
@@ -215,9 +216,10 @@ config
         + report | name: ai_command | label: ai_command | buffer: 4096
         + inline mykee.key | : sk-0dc7c44723d84f30a4f390170e0ab4d3
 
-+ start apps | caps: 6000 | ram: 300M
++ start apps | caps: 6000 | ram: 640M
   + binary init
   + route
+    + service Block | + child drivers
     + service ROM | label: config | + child report_rom
     + service Report | + child report_rom
     + service Timer | + child timer
@@ -257,6 +259,8 @@ config
 + service Block
   + policy | label_prefix: desktop_builder -> ahci | + child ahci
   + policy | label_prefix: desktop_builder -> nvme | + child nvme
+  + policy | label_prefix: apps -> data_ahci | + child ahci
+  + policy | label_prefix: apps -> data_nvme | + child nvme
 
 + start acpi | caps: 250 | ram: 4M
   + route
@@ -377,6 +381,14 @@ config
     + policy | label: desktop_builder -> ahci5 | device: 5 | writeable: yes
     + policy | label: desktop_builder -> ahci6 | device: 6 | writeable: yes
     + policy | label: desktop_builder -> ahci7 | device: 7 | writeable: yes
+    + policy | label: apps -> data_ahci0 | device: 0 | writeable: yes
+    + policy | label: apps -> data_ahci1 | device: 1 | writeable: yes
+    + policy | label: apps -> data_ahci2 | device: 2 | writeable: yes
+    + policy | label: apps -> data_ahci3 | device: 3 | writeable: yes
+    + policy | label: apps -> data_ahci4 | device: 4 | writeable: yes
+    + policy | label: apps -> data_ahci5 | device: 5 | writeable: yes
+    + policy | label: apps -> data_ahci6 | device: 6 | writeable: yes
+    + policy | label: apps -> data_ahci7 | device: 7 | writeable: yes
   + route
     + service Dma      | + child platform
     + service Platform | + child platform
@@ -390,6 +402,7 @@ config
   + config | max_hmb_size: 16M
     + report | namespaces: yes
     + policy | label: desktop_builder -> nvme0 | writeable: yes
+    + policy | label: apps -> data_nvme0 | writeable: yes
   + route
     + service Dma      | + child platform
     + service Platform | + child platform

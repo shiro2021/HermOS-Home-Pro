@@ -2189,7 +2189,8 @@ namespace Hermos {
 						});
 						g.node("dir", [&] {
 							g.attribute("name", "home");
-							g.node("ram");
+							if (_data_mounted()) g.node("fs", [&] { g.attribute("writeable", "yes"); });
+							else                 g.node("ram");
 						});
 					});
 				});
@@ -2198,6 +2199,11 @@ namespace Hermos {
 						g.attribute("name", "Terminal");
 						g.node("child", [&] { g.attribute("name", term.string()); });
 					});
+					if (_data_mounted())
+						g.node("service", [&] {
+							g.attribute("name", "File_system");
+							g.node("child", [&] { g.attribute("name", "data_fs"); });
+						});
 					g.node("any-service", [&] { g.node("parent"); });
 				});
 			});
@@ -2299,6 +2305,72 @@ namespace Hermos {
 		}
 
 		/* emit the nested "apps" init config (one <start> per running app) */
+		/* the persistent data partition is served only while some app can use it */
+		bool _data_mounted() const
+		{
+			if (!_data_part) return false;
+			for (int i = 0; i < MAX_APPS; ++i) if (_app_kind[i] != APP_NONE) return true;
+			return false;
+		}
+
+		/* part_block exposes partition <N> of the disk the scan found; data_fs serves it
+		 * as a File_system (the rump kernel's ext2fs). The disk is named only by the
+		 * label the drivers' per-disk policies expect (data_<ahci1|nvme0>). */
+		void _emit_data_stack(Xml_generator &g)
+		{
+			Genode::String<24> const dlabel("data_", _data_label.string());
+
+			g.node("start", [&] {
+				g.attribute("name", "data_part");
+				g.attribute("caps", 120);
+				g.attribute("ram", "16M");
+				g.node("provides", [&] { g.node("service", [&] { g.attribute("name", "Block"); }); });
+				g.node("binary", [&] { g.attribute("name", "part_block"); });
+				g.node("config", [&] {
+					g.node("policy", [&] {
+						g.attribute("label_prefix", "data_fs");
+						g.attribute("partition", _data_part);
+						g.attribute("writeable", "yes");
+					});
+				});
+				g.node("route", [&] {
+					g.node("service", [&] {
+						g.attribute("name", "Block");
+						g.node("parent", [&] { g.attribute("label", dlabel.string()); });
+					});
+					g.node("any-service", [&] { g.node("parent"); });
+				});
+			});
+
+			g.node("start", [&] {
+				g.attribute("name", "data_fs");
+				g.attribute("caps", 400);
+				g.attribute("ram", "64M");
+				g.node("provides", [&] { g.node("service", [&] { g.attribute("name", "File_system"); }); });
+				g.node("binary", [&] { g.attribute("name", "vfs"); });
+				g.node("config", [&] {
+					g.node("vfs", [&] {
+						g.node("rump", [&] {
+							g.attribute("fs", "ext2fs");
+							g.attribute("ram", "48M");
+							g.attribute("writeable", "yes");
+						});
+					});
+					g.node("default-policy", [&] {
+						g.attribute("root", "/");
+						g.attribute("writeable", "yes");
+					});
+				});
+				g.node("route", [&] {
+					g.node("service", [&] {
+						g.attribute("name", "Block");
+						g.node("child", [&] { g.attribute("name", "data_part"); });
+					});
+					g.node("any-service", [&] { g.node("parent"); });
+				});
+			});
+		}
+
 		void _emit_apps_config()
 		{
 			(void)_apps_report.generate_xml([&] (Xml_generator &g) {
@@ -2311,6 +2383,7 @@ namespace Hermos {
 					g.node("service", [&] { g.attribute("name", "Gui"); });
 					g.node("service", [&] { g.attribute("name", "Timer"); });
 					g.node("service", [&] { g.attribute("name", "Rtc"); });
+					g.node("service", [&] { g.attribute("name", "Block"); });
 				});
 				g.node("default-route", [&] {
 					g.node("any-service", [&] { g.node("parent"); });
@@ -2320,6 +2393,7 @@ namespace Hermos {
 					g.attribute("ram", "2M");
 				});
 				g.node("report", [&] { g.attribute("child_ram", "yes"); });
+				if (_data_mounted()) _emit_data_stack(g);
 				for (int i = 0; i < MAX_APPS; ++i) {
 					if (_app_kind[i] == APP_NONE) continue;
 					if (_app_kind[i] == APP_TERMINAL) { _emit_terminal_stack(g, i); continue; }

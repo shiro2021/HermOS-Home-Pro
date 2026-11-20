@@ -74,7 +74,8 @@ function carries one of these marks:
 | Function | State | Notes |
 |---|---|---|
 | Terminal: bash 5.3 + GNU coreutils | VERIFIED | `echo` and `ls /` ran; `/` holds `bin dev home lib pipe share tmp`. |
-| Terminal storage | VERIFIED | `/tmp` and `/home` are RAM — **everything is lost at reboot**. |
+| Terminal `/home` | VERIFIED | Mounted from the `HERMOS-DATA` ext2 partition (part_block + rump ext2fs). A file written in the Terminal was read back on the host; `e2fsck` clean. Falls back to RAM when no data partition exists. |
+| Terminal `/tmp` | VERIFIED | RAM, lost at reboot. |
 | Terminal text editor (vim) | ABSENT | Not in this image. |
 | Files (`hermos_files`): start, browse `/Home` | BUILT | Starts and scans its folder; see the window bug in §8. |
 | Files: text editor, hex editor, image view, copy/move/delete/rename | BUILT | Code exists, untested. |
@@ -108,7 +109,7 @@ function carries one of these marks:
 | Install: read-back verification | VERIFIED | It caught an NVMe truncation bug. |
 | Refuses an image without a real payload | VERIFIED | |
 | Reboot after install | BUILT | |
-| **Use of the data partition** | ABSENT | Created and empty; nothing mounts or uses it. |
+| Use of the data partition | PARTIAL | Terminal `/home` is mounted from it (tested live, QEMU). Files app and an installed-disk boot test are still to do. |
 | Persistent user files, settings, installed apps | ABSENT | The installed OS runs from RAM like the live one. |
 | Updates, rollback, recovery | ABSENT | The Updates window is a mock-up. |
 | 4K-sector disks | ABSENT | Refused with a message. |
