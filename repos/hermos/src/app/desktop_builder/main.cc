@@ -2322,19 +2322,27 @@ namespace Hermos {
 							g.attribute("name", "assets");
 							g.node("rom", [&] { g.attribute("name", "Roboto-Regular.ttf"); });
 						});
+						/* /Home is the persistent data partition when there is one, else RAM (lost at reboot);
+						 * no invented sample files */
 						g.node("dir", [&] {
 							g.attribute("name", "Home");
-							g.node("inline", [&] { g.attribute("name", "README.txt"); g.append("Welcome to HermOS Files!"); });
-							g.node("inline", [&] { g.attribute("name", "notes.md");   g.append("# A markdown note"); });
-							g.node("inline", [&] { g.attribute("name", "todo.txt");   g.append("1. ship the OS"); });
-							g.node("dir", [&] { g.attribute("name", "Documents"); g.node("ram"); });
-							g.node("dir", [&] { g.attribute("name", "Downloads"); g.node("ram"); });
-							g.node("dir", [&] { g.attribute("name", "Pictures");  g.node("ram"); });
+							if (_data_mounted()) {
+								g.node("fs", [&] { g.attribute("writeable", "yes"); });
+							} else {
+								g.node("dir", [&] { g.attribute("name", "Documents"); g.node("ram"); });
+								g.node("dir", [&] { g.attribute("name", "Downloads"); g.node("ram"); });
+								g.node("dir", [&] { g.attribute("name", "Pictures");  g.node("ram"); });
+							}
 						});
 					});
 				});
 				g.node("route", [&] {
 					g.node("service", [&] { g.attribute("name", "Gui"); g.node("parent"); });
+					if (_data_mounted())
+						g.node("service", [&] {
+							g.attribute("name", "File_system");
+							g.node("child", [&] { g.attribute("name", "data_fs"); });
+						});
 					g.node("any-service", [&] { g.node("parent"); });
 				});
 			});

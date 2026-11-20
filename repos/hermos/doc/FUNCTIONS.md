@@ -80,7 +80,7 @@ function carries one of these marks:
 | Terminal `/home` | VERIFIED | Mounted from the `HERMOS-DATA` ext2 partition (part_block + rump ext2fs). A file written in the Terminal was read back on the host; `e2fsck` clean. Falls back to RAM when no data partition exists. |
 | Terminal `/tmp` | VERIFIED | RAM, lost at reboot. |
 | Terminal text editor (vim) | ABSENT | Not in this image. |
-| Files (`hermos_files`): start, browse `/Home` | BUILT | Starts and scans its folder; see the window bug in §8. |
+| Files (`hermos_files`): start, browse `/Home` | VERIFIED | `/Home` is the persistent data partition (same ext2 service as the Terminal's `/home`); lists the real files. With no data partition it is empty RAM folders. Sample files removed. The Quick Access entries Documents/Downloads exist only if created (e.g. from the Terminal). Drawn at a fixed size, so it is stretched in a resized Cell. |
 | Files: text editor, hex editor, image view, copy/move/delete/rename | BUILT | Code exists, untested. |
 | Files: format converter | STUB | Codecs are placeholders. |
 | Files: SSH/SFTP | STUB | Logs "stub". |
