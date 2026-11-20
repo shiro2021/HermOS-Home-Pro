@@ -3477,7 +3477,7 @@ namespace Hermos {
 			}
 
 			/* the single search field */
-			if (m.hit(Scene::SEARCH_RECT, x, y)) {
+			if (m.hit(Scene::search_rect(_sstate), x, y)) {
 				_bar_focused = true; _dirty = true;
 				log("HermOS search field focused");
 				return true;
@@ -3607,6 +3607,17 @@ namespace Hermos {
 					_sb_y = (int)sb.attribute_value("y", (unsigned long)_sb_y);
 					_sb_w = (int)sb.attribute_value("w", (unsigned long)_sb_w);
 					_sb_h = (int)sb.attribute_value("h", (unsigned long)_sb_h);
+				});
+
+				/* Shiro Command Bar style (canvas pixels, computed by the theme engine) */
+				theme.with_optional_sub_node("commandbar", [&] (Xml_node const &n) {
+					Scene::CmdBar &b = _sstate.cmdbar;
+					auto f = [&] (char const *k) { return float(n.attribute_value(k, 0UL)); };
+					b.x = f("x"); b.y = f("y"); b.w = f("w"); b.font = f("font");
+					b.pad_x = f("pad_x"); b.pad_y = f("pad_y"); b.spacing = f("spacing");
+					b.tip = f("tip"); b.greet_font = f("greet_font"); b.sub_font = f("sub_font");
+					b.valid = b.w > 0 && b.font > 0;
+					_scene_valid = false;
 				});
 
 				/* Plasma-style panels: visibility mode + thickness (design px) */

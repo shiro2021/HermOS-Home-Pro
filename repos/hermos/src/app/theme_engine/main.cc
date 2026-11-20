@@ -51,6 +51,10 @@ namespace Theme {
 		 * (100 = percent, the legacy unit; 10000 = 0.01 % steps) */
 		int  _scale { 100 };
 
+		/* Shiro Command Bar (fractions of the screen, see theme.hid) */
+		struct Cmdbar { bool set; int x, y, w, font, pad_x, pad_y, spacing, tip, greet_font, sub_font; };
+		Cmdbar _cb { };
+
 		/* Plasma-style panels */
 		char _pl_mode[16] { "autohide" };
 		char _pb_mode[16] { "visible" };
@@ -125,7 +129,7 @@ namespace Theme {
 		/* parse the HID: "+"-indented tree with "key: value" lines */
 		void _parse(char const *buf, size_t len)
 		{
-			enum Sect { SECT_NONE, SECT_CELL, SECT_SIDEBAR, SECT_ICONS, SECT_SNAP, SECT_PLEFT, SECT_PBOTTOM } sect = SECT_NONE;
+			enum Sect { SECT_NONE, SECT_CELL, SECT_SIDEBAR, SECT_ICONS, SECT_SNAP, SECT_PLEFT, SECT_PBOTTOM, SECT_CMDBAR } sect = SECT_NONE;
 			Cell *cur = nullptr;
 			Snap *scur = nullptr;
 
@@ -168,6 +172,7 @@ namespace Theme {
 				                                                   { scur = &_snaps[_snap_count++]; scur->id[0] = 0; } }
 				else if (Genode::strcmp(word, "snaps") == 0) { sect = SECT_NONE;  cur = nullptr; scur = nullptr; }
 				else if (Genode::strcmp(word, "panels") == 0) { sect = SECT_NONE;  cur = nullptr; scur = nullptr; }
+				else if (Genode::strcmp(word, "commandbar") == 0) { sect = SECT_CMDBAR; cur = nullptr; scur = nullptr; }
 				else if (Genode::strcmp(word, "left") == 0)   { sect = SECT_PLEFT;   cur = nullptr; scur = nullptr; }
 				else if (Genode::strcmp(word, "bottom") == 0) { sect = SECT_PBOTTOM; cur = nullptr; scur = nullptr; }
 					continue;
@@ -191,7 +196,13 @@ namespace Theme {
 				int val = 0;
 				while (vs < le && *vs >= '0' && *vs <= '9') { val = val * 10 + (*vs - '0'); ++vs; }
 
-				if (Genode::strcmp(key, "scale") == 0) {
+				if (sect == SECT_CMDBAR) {
+					static struct { char const *k; int *v; } const map[] = {
+						{ "x", &_cb.x }, { "y", &_cb.y }, { "w", &_cb.w }, { "font", &_cb.font },
+						{ "pad_x", &_cb.pad_x }, { "pad_y", &_cb.pad_y }, { "spacing", &_cb.spacing },
+						{ "tip", &_cb.tip }, { "greet_font", &_cb.greet_font }, { "sub_font", &_cb.sub_font } };
+					for (auto const &m : map) if (Genode::strcmp(key, m.k) == 0) { *m.v = val; _cb.set = true; }
+				} else if (Genode::strcmp(key, "scale") == 0) {
 					if (val >= 100) _scale = val;
 				} else if (Genode::strcmp(key, "mode") == 0 && (sect == SECT_PLEFT || sect == SECT_PBOTTOM)) {
 					_copy_val(sect == SECT_PLEFT ? _pl_mode : _pb_mode, val_start, le);
@@ -296,6 +307,19 @@ namespace Theme {
 						xml.attribute("y", _sb_y * _screen_h / _scale);
 						xml.attribute("w", _sb_w * _screen_w / _scale);
 						xml.attribute("h", _sb_h * _screen_h / _scale);
+					});
+					if (_cb.set) xml.node("commandbar", [&] () {
+						/* x and w follow the screen width, every length the screen height */
+						xml.attribute("x",          _cb.x * _screen_w / _scale);
+						xml.attribute("y",          _cb.y * _screen_h / _scale);
+						xml.attribute("w",          _cb.w * _screen_w / _scale);
+						xml.attribute("font",       _cb.font * _screen_h / _scale);
+						xml.attribute("pad_x",      _cb.pad_x * _screen_h / _scale);
+						xml.attribute("pad_y",      _cb.pad_y * _screen_h / _scale);
+						xml.attribute("spacing",    _cb.spacing * _screen_h / _scale);
+						xml.attribute("tip",        _cb.tip * _screen_h / _scale);
+						xml.attribute("greet_font", _cb.greet_font * _screen_h / _scale);
+						xml.attribute("sub_font",   _cb.sub_font * _screen_h / _scale);
 					});
 					xml.node("panels", [&] () {
 						xml.node("left",   [&] () { xml.attribute("mode", _pl_mode); xml.attribute("size", _pl_size); });

@@ -57,6 +57,21 @@ theme
   y: 0
   w: 2318
   h: 5352
+# Shiro Command Bar. x/w are fractions of the screen width, everything else of the
+# screen height (scale: 10000). The bar height is ImGui's frame height:
+#   height = font + 2 * pad_y ; icon buttons = height - spacing ; text is centred
+#   on the line box (ascent - descent) inside the frame.
++ commandbar
+  x: 1868
+  y: 2900
+  w: 3411
+  font: 127
+  pad_x: 234
+  pad_y: 205
+  spacing: 98
+  tip: 244
+  greet_font: 322
+  sub_font: 154
 # Plasma-style panels. mode: visible | autohide | hidden. size is in design px.
 # Users change these at runtime with Meta+L (left dock) and Meta+B (bottom bar).
 + panels

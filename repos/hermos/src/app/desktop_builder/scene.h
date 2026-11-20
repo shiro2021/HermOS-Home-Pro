@@ -112,6 +112,19 @@ struct Hits
 	int  app_play_n { 0 };
 };
 
+/* Shiro Command Bar style, in canvas pixels, published by the theme engine.
+ * `valid` is false until the first theme_state arrives. */
+struct CmdBar
+{
+	bool  valid { false };
+	float x { 0 }, y { 0 }, w { 0 };               /* frame position and width */
+	float font { 0 };                               /* ImGui FontSize */
+	float pad_x { 0 }, pad_y { 0 };                 /* ImGui FramePadding */
+	float spacing { 0 };                            /* ImGui ItemInnerSpacing */
+	float tip { 0 };                                /* depth of the pointed ends */
+	float greet_font { 0 }, sub_font { 0 };
+};
+
 /* what the desktop really knows about the system (filled by desktop_builder) */
 struct SysInfo
 {
@@ -136,6 +149,7 @@ struct AppEntry
 };
 struct State
 {
+	CmdBar   cmdbar { };
 	SysInfo  sys { };
 	AppEntry apps[MAX_APP_ENTRIES] { };
 	int      app_count { 0 };
@@ -173,7 +187,6 @@ static inline Map map_for(int w, int h)
 	return { k, (float(w) - 1536.0f * k) * 0.5f, (float(h) - 1024.0f * k) * 0.5f };
 }
 
-static constexpr Rect SEARCH_RECT  { 287, 297, 524, 54 };
 static constexpr Rect TASKBAR_RECT { 0, 511, 1090, 28 };
 
 /* -------------------------------------------------------------- the Ctx */
@@ -439,40 +452,91 @@ static inline Poly search_shape(Ctx &g, float x, float y, float w, float h, floa
 	return p;
 }
 
+/* Until the theme arrives: proportions of the screen, never pixels. */
+static inline CmdBar cmdbar_fallback(int cw, int ch)
+{
+	CmdBar b; b.valid = true;
+	float const H = float(ch);
+	b.w = float(cw) * 0.3411f; b.x = float(cw) * 0.1868f; b.y = H * 0.2900f;
+	b.font = H * 0.0127f; b.pad_x = H * 0.0234f; b.pad_y = H * 0.0205f; b.spacing = H * 0.0098f;
+	b.tip = H * 0.0244f; b.greet_font = H * 0.0322f; b.sub_font = H * 0.0154f;
+	return b;
+}
+
+/* The bar laid out in design units (ImGui rules). One function feeds both the
+ * drawing and the hit test, so they cannot drift apart. */
+struct CmdBarLayout
+{
+	float x, y, w, h;                    /* frame (design units) */
+	float tip, spacing, font, pad_x;
+	float btn;                           /* icon button diameter = frame height - spacing */
+	float greet_font, sub_font;
+};
+
+static inline CmdBarLayout cmdbar_layout(State const &st)
+{
+	CmdBar const b = st.cmdbar.valid ? st.cmdbar : cmdbar_fallback(st.cw, st.ch);
+	Map const m = map_for(st.cw, st.ch);
+	float const u = 1.0f / m.k;
+	CmdBarLayout l;
+	l.x = (b.x - m.ox) * u; l.y = (b.y - m.oy) * u; l.w = b.w * u;
+	l.font = b.font * u; l.pad_x = b.pad_x * u; l.spacing = b.spacing * u; l.tip = b.tip * u;
+	l.h = l.font + 2.0f * b.pad_y * u;                       /* ImGui::GetFrameHeight() */
+	l.btn = l.h - l.spacing;
+	l.greet_font = b.greet_font * u; l.sub_font = b.sub_font * u;
+	return l;
+}
+
+static inline Rect search_rect(State const &st)
+{
+	CmdBarLayout const l = cmdbar_layout(st);
+	return { l.x, l.y, l.w, l.h };
+}
+
+static inline void hex_button(Ctx &g, float cx, float cy, float d, Rgba fill, Rgba edge)
+{
+	Poly hx; hx.n = 0;
+	for (int i = 0; i < 6; ++i) { float const a = PI_ / 6 + float(i) * PI_ / 3; hx.add(g.X(cx + cosf_(a) * d * 0.5f), g.Y(cy + sinf_(a) * d * 0.5f)); }
+	hx.finish();
+	fill_poly(g.c, hx, Solid { fill });
+	stroke_poly(g.c, hx, g.L(1.0f), Solid { edge });
+}
+
 static inline void draw_greeting_search(Ctx &g, State const &st)
 {
-	g.textc(g.f.med, 530, 206, 31.8f, Pal::white, "Good Morning", 0, 0.0f);
-	g.textc(g.f.reg, 530, 252, 15.8f, Rgba { 245, 247, 250, 0.95f }, "How can I help you today?");
+	CmdBarLayout const l = cmdbar_layout(st);
+	float const cx = l.x + l.w * 0.5f, cy = l.y + l.h * 0.5f;
 
-	/* the ONE search field (Google-style): hexagonal pill, glass fill, orange edge */
-	float const x = 287, y = 297, w = 524, h = 54, tip = 25;
-	Poly p = search_shape(g, x, y, w, h, tip);
+	/* greeting: stacked above the bar by ItemSpacing, centred on it */
+	float const sub_h = line_height(g.f.reg, l.sub_font * g.k) / g.k;
+	float const ttl_h = line_height(g.f.med, l.greet_font * g.k) / g.k;
+	float const sub_top = l.y - 2.0f * l.spacing - sub_h;
+	float const ttl_top = sub_top - l.spacing - ttl_h;
+	g.textc(g.f.med, cx, ttl_top, l.greet_font, Pal::white, "Good Morning");
+	g.textc(g.f.reg, cx, sub_top, l.sub_font, Rgba { 245, 247, 250, 0.95f }, "How can I help you today?");
+
+	/* the ONE command bar: hexagonal pill, glass fill, orange edge */
+	Poly p = search_shape(g, l.x, l.y, l.w, l.h, l.tip);
 	glow_poly(g.c, p, g.L(22), g.L(7), Rgba { 255, 120, 24, st.search_focus ? 0.60f : 0.38f });
-	fill_poly(g.c, p, VGrad { g.Y(y), g.Y(y + h), Rgba { 24, 26, 30, 0.90f }, Rgba { 12, 13, 15, 0.92f } });
-	stroke_poly(g.c, p, g.L(st.search_focus ? 2.6f : 2.0f), VGrad { g.Y(y), g.Y(y + h), Rgba { 255, 190, 112, 1.0f }, Rgba { 232, 102, 24, 1.0f } });
+	fill_poly(g.c, p, VGrad { g.Y(l.y), g.Y(l.y + l.h), Rgba { 24, 26, 30, 0.90f }, Rgba { 12, 13, 15, 0.92f } });
+	stroke_poly(g.c, p, g.L(st.search_focus ? 2.6f : 2.0f), VGrad { g.Y(l.y), g.Y(l.y + l.h), Rgba { 255, 190, 112, 1.0f }, Rgba { 232, 102, 24, 1.0f } });
 
-	/* magnifier button */
-	float const bx = x + 41, by = y + h / 2;
-	Poly hx; hx.n = 0;
-	for (int i = 0; i < 6; ++i) { float const a = PI_ / 6 + float(i) * PI_ / 3; hx.add(g.X(bx + cosf_(a) * 19), g.Y(by + sinf_(a) * 19)); }
-	hx.finish();
-	fill_poly(g.c, hx, Solid { Rgba { 34, 36, 40, 1.0f } });
-	stroke_poly(g.c, hx, g.L(1.0f), Solid { Rgba { 96, 98, 104, 0.9f } });
-	Icon::search(g, bx, by, 0.78f, Pal::white);
+	/* content row, left to right, the way ImGui lays out a frame:
+	 *   [tip][spacing][icon button][spacing][text ...........][spacing][button][spacing][tip] */
+	float const bx = l.x + l.tip + l.spacing + l.btn * 0.5f;
+	float const ax = l.x + l.w - l.tip - l.spacing - l.btn * 0.5f;
+	float const is = l.btn / 38.0f;                              /* icon scale relative to a 38-unit button */
+	hex_button(g, bx, cy, l.btn, Rgba { 34, 36, 40, 1.0f }, Rgba { 96, 98, 104, 0.9f });
+	Icon::search(g, bx, cy, 0.78f * is, Pal::white);
+	hex_button(g, ax, cy, l.btn, Rgba { 24, 25, 28, 1.0f }, Rgba { 110, 108, 104, 0.9f });
+	Icon::arrow_right(g, ax, cy, 0.72f * is, Pal::white);
 
-	/* text */
+	/* text: starts one spacing after the icon button, vertically centred on its line box */
 	char const *t = st.prompt ? st.prompt : "Ask or describe what you want...";
 	Rgba const tc = st.prompt ? Pal::white : Rgba { 214, 218, 224, 0.92f };
-	g.text(g.f.reg, x + 65, y + 18.5f, 12.0f, tc, t);
-
-	/* submit arrow */
-	float const ax = x + w - 37;
-	Poly ah; ah.n = 0;
-	for (int i = 0; i < 6; ++i) { float const a = PI_ / 6 + float(i) * PI_ / 3; ah.add(g.X(ax + cosf_(a) * 18), g.Y(by + sinf_(a) * 18)); }
-	ah.finish();
-	fill_poly(g.c, ah, Solid { Rgba { 24, 25, 28, 1.0f } });
-	stroke_poly(g.c, ah, g.L(1.0f), Solid { Rgba { 110, 108, 104, 0.9f } });
-	Icon::arrow_right(g, ax, by, 0.72f, Pal::white);
+	float const tx = bx + l.btn * 0.5f + l.spacing + l.pad_x * 0.5f;
+	float const line_h = line_height(g.f.reg, l.font * g.k) / g.k;
+	g.text(g.f.reg, tx, cy - line_h * 0.5f, l.font, tc, t);
 }
 
 /* ------------------------------------------------------ navigation rail (right) */

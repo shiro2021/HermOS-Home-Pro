@@ -420,6 +420,14 @@ static inline float text_width(Font &f, float px, char const *t, float tracking 
 	return w;
 }
 
+/* height of one text line box (ascent - descent), as ImGui's CalcTextSize uses */
+static inline float line_height(Font &f, float px)
+{
+	if (!f.ok) return px;
+	int asc, desc, gap; stbtt_GetFontVMetrics(&f.info, &asc, &desc, &gap);
+	return float(asc - desc) * stbtt_ScaleForMappingEmToPixels(&f.info, px);
+}
+
 /* Draw text with its top (ascender line) at y. Returns the advance width.
  * `bold` thickens the strokes by re-drawing with a sub-pixel offset. */
 static inline float draw_text(Canvas &c, Font &f, float x, float y, float px, Rgba col,
