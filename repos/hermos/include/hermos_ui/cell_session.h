@@ -380,6 +380,21 @@ namespace Hermos {
 			_env(env), _render_sigh(sigh)
 		{ }
 
+		/* slot number from a label like "apps -> files3 -> files"; -1 if there is none */
+		static int _slot_from_label(char const *p)
+		{
+			static char const *const prefixes[] = { "term", "files", "app" };
+			for (char const *q = p; *q; ++q) {
+				if (q != p && q[-1] != ' ') continue;          /* only at the start of a label segment */
+				for (char const *pre : prefixes) {
+					char const *a = pre, *b = q;
+					while (*a && *a == *b) { ++a; ++b; }
+					if (!*a && *b >= '0' && *b <= '9') return *b - '0';
+				}
+			}
+			return -1;
+		}
+
 		Create_result _create_session(char const *args) override
 		{
 			Cell_session &s = *new (md_alloc()) Cell_session {
@@ -397,15 +412,10 @@ namespace Hermos {
 				}
 			}
 
-			/* pin clients to deterministic cells regardless of connect order:
-			 * the first terminal -> hero cell 0, a second terminal -> cell 1 */
-			int preferred = -1;
-			{
-				Session_label const label = s.label();
-				char const *const p = label.string();
-				if      (_contains(p, "terminal2")) preferred = 1;
-				else if (_contains(p, "terminal"))  preferred = 0;
-			}
+			/* The desktop decides which Cell an app gets and encodes it in the child
+			 * name it starts the app under: term<N>, files<N>, app<N>. The Gui server
+			 * honours that number instead of guessing from the connect order. */
+			int const preferred = _slot_from_label(s.label().string());
 
 			int const idx = _cells.attach(s, preferred);
 			if (idx < 0)
