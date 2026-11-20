@@ -390,9 +390,27 @@ enum { CTRL_UNDO = 0, CTRL_MIN, CTRL_MAX, CTRL_CLOSE };
 
 struct Ctrls { float x[4]; float y; float r; bool has[4]; };
 
-/* where the control buttons of window i sit (canvas px), for drawing and hit-testing */
-static inline Ctrls window_ctrls(int i, WinRect const &r)
+/* Title strip of a Cell that hosts an app. Everything derives from the Cell's own geometry
+ * (chamfer = 13.5% of the shorter side, like the frame): buttons are right-aligned and kept
+ * clear of the top-right diagonal. min / max / close; no reference-sheet coordinates. */
+static constexpr float HOSTED_STRIP = 38.0f;           /* title strip height, canvas px */
+
+static inline Ctrls hosted_ctrls(WinRect const &r)
 {
+	float const ch = minf(r.w, r.h) * 0.135f;           /* chamfer */
+	Ctrls c {};
+	c.r = 8.5f;
+	c.y = r.y + HOSTED_STRIP * 0.5f + 2.0f;
+	float const clear = ch > HOSTED_STRIP ? ch - HOSTED_STRIP * 0.5f : 0.0f;   /* diagonal intrusion at strip centre */
+	float x = r.x + r.w - clear - 26.0f;
+	for (int k = CTRL_CLOSE; k >= CTRL_MIN; --k) { c.has[k] = true; c.x[k] = x; x -= c.r * 2.0f + 14.0f; }
+	return c;
+}
+
+/* where the control buttons of window i sit (canvas px), for drawing and hit-testing */
+static inline Ctrls window_ctrls(int i, WinRect const &r, bool hosted = false)
+{
+	if (hosted) return hosted_ctrls(r);
 	WinRef const &ref = WIN_REF[i]; CtrlDef const &d = CTRL[i];
 	float const s = minf(r.w / ref.w, r.h / ref.h);
 	auto X = [&](float cx) { return r.x + (cx / 1.9f - ref.ox) * s; };
@@ -404,6 +422,33 @@ static inline Ctrls window_ctrls(int i, WinRect const &r)
 	return c;
 }
 
+/* title + controls on the strip of a hosted Cell */
+static inline void draw_hosted_strip(Ctx &g, int i, WinRect const &r, bool active, State const &st)
+{
+	char const *title = "App";
+	for (int a = 0; a < st.app_count; ++a)
+		if (st.apps[a].active && st.apps[a].slot == i) { title = st.apps[a].name; break; }
+
+	float const ch = minf(r.w, r.h) * 0.135f;
+	float const tx = r.x + (ch > HOSTED_STRIP * 0.5f ? ch - HOSTED_STRIP * 0.5f : 0.0f) + 22.0f;
+	Rgba const ink { 238, 238, 244, active ? 0.96f : 0.62f };
+	draw_text(g.c, g.f.semi, tx, r.y + 9.0f, 15.0f, ink, title, 0.2f, 0);
+
+	Ctrls const c = hosted_ctrls(r);
+	Rgba const line_c { 255, 214, 160, 0.92f };
+	float const u = c.r * 0.46f;
+	/* minimise */
+	fill_circle(g.c, c.x[CTRL_MIN], c.y, c.r, Rgba { 255, 255, 255, 0.07f });
+	line(g.c, c.x[CTRL_MIN] - u, c.y + u * 0.6f, c.x[CTRL_MIN] + u, c.y + u * 0.6f, 1.6f, line_c);
+	/* maximise */
+	fill_circle(g.c, c.x[CTRL_MAX], c.y, c.r, Rgba { 255, 255, 255, 0.07f });
+	stroke_rrect(g.c, c.x[CTRL_MAX] - u, c.y - u, u * 2, u * 2, 1.5f, 1.6f, Solid { line_c });
+	/* close */
+	fill_circle(g.c, c.x[CTRL_CLOSE], c.y, c.r, Rgba { 232, 84, 40, 0.85f });
+	line(g.c, c.x[CTRL_CLOSE] - u, c.y - u, c.x[CTRL_CLOSE] + u, c.y + u, 1.7f, Rgba { 255, 255, 255, 1.0f });
+	line(g.c, c.x[CTRL_CLOSE] - u, c.y + u, c.x[CTRL_CLOSE] + u, c.y - u, 1.7f, Rgba { 255, 255, 255, 1.0f });
+}
+
 /* ------------------------------------------------------------------ dispatch */
 
 static inline void draw_window(Ctx &g, int i, WinRect const &r, bool active, bool hosted, State const &st)
@@ -411,7 +456,7 @@ static inline void draw_window(Ctx &g, int i, WinRect const &r, bool active, boo
 	WinRef const &ref = WIN_REF[i];
 	WinGeom wg { r.x, r.y, r.w, r.h, minf(r.w / ref.w, r.h / ref.h) };
 	window_frame(g, wg, active, hosted);
-	if (hosted) return;                   /* a real app is blitted over the content */
+	if (hosted) { draw_hosted_strip(g, i, r, active, st); return; }   /* the app itself is blitted over the content */
 	Loc l { g, wg, ref.ox, ref.oy, 0 };
 	switch (i) {
 	case 0: win_welcome(l, st); break;

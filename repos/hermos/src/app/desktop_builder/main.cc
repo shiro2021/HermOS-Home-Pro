@@ -395,6 +395,7 @@ namespace Hermos {
 		Scene::State  _sstate  { };
 		Scene::Hits   _shits   { };
 		uint32_t     *_scene_px   { nullptr };   /* cached composed frame */
+		Pixel        *_back_px    { nullptr };   /* frame is composed here, then copied to the scanout in one go */
 		bool          _scene_ready { false };
 		bool          _scene_valid { false };
 		unsigned      _scene_hash  { 0 };
@@ -1926,10 +1927,13 @@ namespace Hermos {
 			Content k;
 			k.w = _cell_w(i); k.h = _cell_h(i);
 			k.x = _win_x(i);  k.y = _win_y(i);
-			k.c = _chamfer[i] * _min2(k.w, k.h) / 100;
+			k.c = _min2(k.w, k.h) * 135 / 1000;      /* same chamfer as the frame the scene draws */
+			/* inscribed rectangle: with the strip height as top and bottom margin, the side margin
+			 * that keeps all four corners clear of the diagonals (plus one border width) */
 			int const border = 14, title = 38;
-			k.l = k.x + border;           k.r = k.x + k.w - border;
-			k.t = k.y + title + k.c / 3; k.b = k.y + k.h - (8 + k.c / 3);
+			int const side = _max2(border, k.c + border + 6 - title);
+			k.l = k.x + side;   k.r = k.x + k.w - side;
+			k.t = k.y + title;  k.b = k.y + k.h - title;
 			return k;
 		}
 
@@ -3406,6 +3410,7 @@ namespace Hermos {
 			ok &= _scene_load_image("/assets/hydro_thumb.png",   _sassets.hydro_thumb);
 			ok &= _scene_load_image("/assets/hydro_big.png",     _sassets.hydro_big);
 			_scene_px = (uint32_t *)_asset_heap.alloc(size_t(_w) * size_t(_h) * 4);
+			_back_px  = (Pixel *)_asset_heap.alloc(size_t(_w) * size_t(_h) * 4);
 			_scene_ready = ok && _scene_px != nullptr;
 			log("HermOS scene: ", _scene_ready ? "ready (immediate-mode desktop)"
 			                                   : "assets missing, using the legacy renderer");
@@ -3535,6 +3540,8 @@ namespace Hermos {
 				Scene::render_base(c, _sfonts, _sassets, _sstate, _shits);
 				_scene_hash = hsh; _scene_valid = true;
 			}
+			Pixel *const scanout = _px;
+			if (_back_px) _px = _back_px;        /* every draw below lands in the back buffer */
 			Genode::memcpy(_px, _scene_px, size_t(_w) * size_t(_h) * 4);
 			{
 				Scene::Canvas c { (uint32_t *)_px, _w, _h };
@@ -3556,6 +3563,7 @@ namespace Hermos {
 			if (_installer_mode) draw_installer(surface);
 			_draw_ai_response(surface);
 			_cursor();
+			if (_px != scanout) { Genode::memcpy(scanout, _px, size_t(_w) * size_t(_h) * 4); _px = scanout; }
 			_fb.refresh(Rect(Point(0, 0), _fb.mode().area));
 		}
 
@@ -3602,8 +3610,9 @@ namespace Hermos {
 			for (int oi = NUM_CELLS - 1; oi >= 0; --oi) {
 				int const idx = _draw_order[oi];
 				if (!_win_open[idx] || !_in_cell(idx, x, y)) continue;
+				bool const is_hosted = _app_kind[idx] != APP_NONE || _gui_root.cells().at(idx) != nullptr;
 				Scene::Ctrls const c = Scene::window_ctrls(idx,
-					{ float(_win_x(idx)), float(_win_y(idx)), float(_cell_w(idx)), float(_cell_h(idx)) });
+					{ float(_win_x(idx)), float(_win_y(idx)), float(_cell_w(idx)), float(_cell_h(idx)) }, is_hosted);
 				for (int k = 0; k < 4; ++k) {
 					if (!c.has[k]) continue;
 					float const dx = float(x) - c.x[k], dy = float(y) - c.y;
@@ -3657,7 +3666,12 @@ namespace Hermos {
 
 			/* taskbar: the HermOS button restores minimised windows; the chevron hides the bar */
 			if (_sstate.bottom.visible() && m.hit(Scene::TASKBAR_RECT, x, y)) {
-				if (x < int(m.X(110))) { for (int i = 0; i < NUM_CELLS; ++i) _win_open[i] = true; _dirty = true; return true; }
+				if (x < int(m.X(110))) {
+						/* restore minimised Cells; the invented mock-up Cells stay hidden unless preview="yes" */
+						for (int i = 0; i < NUM_CELLS; ++i)
+							if (i < 2 || _preview || _app_kind[i] != APP_NONE || _gui_root.cells().at(i)) _win_open[i] = true;
+						_dirty = true; return true;
+					}
 				if (x >= int(m.X(380)) && x < int(m.X(710))) { _sstate.bottom.toggle(); _dirty = true; return true; }
 			}
 

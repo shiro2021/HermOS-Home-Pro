@@ -58,9 +58,12 @@ function carries one of these marks:
 | "Hermes Agent: Ready" status | BUILT | Always shows Ready; the agent's real state is not queried. |
 | Windows: frame, close, minimise, restore from the taskbar | VERIFIED | |
 | Window maximise (uses the Plasma-style client area) | BUILT | |
-| Window drag, edge resize, snap to screen edges | BUILT | Legacy code, not re-tested after the scene rewrite. |
+| Cell drag by the title strip | VERIFIED | Moves; a grab in the top 10 px is an edge resize, not a move. |
+| Cell edge resize, snap to screen edges | BUILT | Resize starts (edge detection verified); snap not re-tested. |
+| Hosted Cell: title, minimise, maximise, close; opaque; true z-order | VERIFIED | Strip geometry derives from the Cell's own size. Minimise and taskbar restore tested; restore no longer reopens the mock-up Cells. |
+| Hosted app resize on Cell resize/maximise | ABSENT | The app's buffer is stretched; the Gui server never signals a new mode (`mode_sigh` is a stub). |
 | Tiling and quick-tile (`Meta+T`, `Meta+arrows`, `Home/End/PgUp/PgDn`, `F`, `R`) | BUILT | Legacy code, untested. |
-| Hosted app windows (apps render inside cells, receive input) | VERIFIED | Terminal. Known bug: see §8. |
+| Hosted apps (render inside Cells, receive input) | VERIFIED | Terminal and Files; Cell numbering bug fixed. |
 | Theme (`theme.hid` → `theme_state`, 1/10000 geometry, panel modes) | VERIFIED | |
 | System window: version, kernel, CPUs, graphics, storage, uptime, memory | VERIFIED | All measured; memory is the desktop's own heap usage. |
 | System window side list (Hardware, Storage, Network, …) | VISUAL | Not clickable. |
@@ -89,9 +92,9 @@ function carries one of these marks:
 | Function | State | Notes |
 |---|---|---|
 | Network stack (NIC → NAT router → agent, 10.0.3.0/24) | VERIFIED | DHCP lease and agent interface up in QEMU. |
-| Hermes agent: prompt → DeepSeek chat API → reply panel | BUILT | Needs an API key and Internet. Never run end to end. |
+| Hermes agent: prompt → DeepSeek chat API → reply panel | PARTIAL | Verified: search field → agent → outgoing request → reply panel. The test host has no DNS, so the reply was "curl failed: Couldn't resolve host name". A real answer is untested. |
 | MyKee key handling | BUILT | **A key string is embedded in `run/hermos_monolith.run`; rotate it if it is real.** |
-| Agent HTTP status page on port 80 | BUILT | |
+| Agent HTTP status page on port 80 | BUILT | Listens (logged). The router has no forward for it, so it is reachable only from inside. |
 | Hermes Core Director, workers, procedure registry | SOURCE ONLY | Part of `hermos_desktop.run`, not the V5 image. |
 | Nitpicker shell, installer UI/executor, test clients | SOURCE ONLY | Same. |
 | `agents_sidebar`, `bottom_dock` | BUILT | Run, but superseded by the scene; vestigial. |
