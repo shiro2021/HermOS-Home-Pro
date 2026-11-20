@@ -455,7 +455,7 @@ static inline void draw_window(Ctx &g, int i, WinRect const &r, bool active, boo
 {
 	WinRef const &ref = WIN_REF[i];
 	WinGeom wg { r.x, r.y, r.w, r.h, minf(r.w / ref.w, r.h / ref.h) };
-	window_frame(g, wg, active, hosted);
+	window_frame(g, wg, active, hosted, st.frame);
 	if (hosted) { draw_hosted_strip(g, i, r, active, st); return; }   /* the app itself is blitted over the content */
 	Loc l { g, wg, ref.ox, ref.oy, 0 };
 	switch (i) {

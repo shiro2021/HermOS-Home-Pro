@@ -147,8 +147,24 @@ struct AppEntry
 	bool active   { false };
 	int  slot     { -1 };     /* the cell it runs in, -1 = none */
 };
+/* Cell frame look. Every value comes from theme.hid (`+ frame`); the defaults only apply
+ * until the first theme_state arrives. Lengths are design px. Only the active Cell glows. */
+struct FrameStyle
+{
+	float border       { 1.6f };
+	float glow_reach   { 16.0f }, glow_sigma   { 5.5f };
+	float shadow_reach { 8.0f  }, shadow_sigma { 3.0f };
+	Rgba  glow         { 255, 112, 22, 0.58f };
+	Rgba  active_a     { 255, 200, 126, 1.0f };   /* active border gradient: light ... */
+	Rgba  active_b     { 226, 92, 20, 1.0f };     /* ... deep orange */
+	Rgba  carbon_a     { 92, 96, 102, 1.0f };     /* inactive border: carbon gray gradient */
+	Rgba  carbon_b     { 48, 51, 56, 1.0f };
+	Rgba  shadow       { 0, 0, 0, 0.38f };        /* inactive Cells only get a soft drop shadow */
+};
+
 struct State
 {
+	FrameStyle frame { };
 	CmdBar   cmdbar { };
 	SysInfo  sys { };
 	AppEntry apps[MAX_APP_ENTRIES] { };
@@ -757,26 +773,12 @@ static inline Poly window_shape(float x, float y, float w, float h)
 	return p;
 }
 
-/* Cell frame look. One place for every number; the active Cell is the only one that glows. */
-struct FrameStyle
+static inline void window_frame(Ctx &g, WinGeom const &wg, bool active, bool hosted, FrameStyle const &fs)
 {
-	float border      { 1.6f };                       /* border width (design px; was 3.4) */
-	float glow_reach  { 16.0f }, glow_sigma { 5.5f }; /* active glow */
-	Rgba  glow        { 255, 112, 22, 0.58f };
-	Rgba  active_a    { 255, 200, 126, 1.0f };        /* active border gradient: light ... */
-	Rgba  active_b    { 226, 92, 20, 1.0f };          /* ... deep orange */
-	Rgba  carbon_a    { 92, 96, 102, 1.0f };          /* inactive border: carbon gray gradient */
-	Rgba  carbon_b    { 48, 51, 56, 1.0f };
-	Rgba  shadow      { 0, 0, 0, 0.38f };             /* inactive Cells only get a soft drop shadow */
-};
-
-static inline void window_frame(Ctx &g, WinGeom const &wg, bool active, bool hosted)
-{
-	FrameStyle const fs { };
 	Poly p = window_shape(wg.x, wg.y, wg.w, wg.h);
 	float const k = wg.s;
 	if (active) glow_poly(g.c, p, fs.glow_reach * k, fs.glow_sigma * k, fs.glow);
-	else        glow_poly(g.c, p, 8 * k, 3.0f * k, fs.shadow);
+	else        glow_poly(g.c, p, fs.shadow_reach * k, fs.shadow_sigma * k, fs.shadow);
 	/* a Cell that hosts an app is fully opaque, so a Cell behind it can never bleed through */
 	float const a0 = hosted ? 1.0f : 0.95f, a1 = hosted ? 1.0f : 0.97f;
 	fill_poly(g.c, p, VGrad { wg.y, wg.y + wg.h, Rgba { 17, 18, 21, a0 }, Rgba { 8, 9, 11, a1 } });

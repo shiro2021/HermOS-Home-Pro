@@ -64,7 +64,7 @@ function carries one of these marks:
 | Hosted app follows its Cell's size (Gui `info` ROM `xpos ypos width height`, signalled on change) | VERIFIED | Terminal re-lays out to the Cell at launch and on maximise (1:1, no stretching). While a drag is running the old buffer is stretched; the new size is applied on release. Apps that ignore the info ROM (Files) still stretch. |
 | Tiling and quick-tile (`Meta+T`, `Meta+arrows`, `Home/End/PgUp/PgDn`, `F`, `R`) | BUILT | Legacy code, untested. |
 | Hosted apps (render inside Cells, receive input) | VERIFIED | Terminal and Files; Cell numbering bug fixed. |
-| Theme (`theme.hid` → `theme_state`, 1/10000 geometry, panel modes) | VERIFIED | |
+| Theme (`theme.hid` → `theme_state`, 1/10000 geometry, panel modes, Cell frame look) | VERIFIED | The `+ frame` section (border width, glow, shadow, active/carbon colours) was changed in the file and the Cells followed. |
 | System window: version, kernel, CPUs, graphics, storage, uptime, memory | VERIFIED | All measured; memory is the desktop's own heap usage. |
 | System window side list (Hardware, Storage, Network, …) | VISUAL | Not clickable. |
 | Navigation rail (Agents, System, Files, Network, Devices, Settings) | VISUAL | Tiles do nothing yet. |

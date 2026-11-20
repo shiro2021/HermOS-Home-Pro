@@ -3837,6 +3837,35 @@ namespace Hermos {
 					_scene_valid = false;
 				});
 
+				/* Cell frame look (theme.hid `+ frame`): lengths arrive in tenths of a screen pixel */
+				theme.with_optional_sub_node("frame", [&] (Xml_node const &n) {
+					Scene::FrameStyle &fs = _sstate.frame;
+					float const to_design = float(Scene::DH) / (10.0f * float(_h));
+					auto len = [&] (char const *k, float dflt) {
+						unsigned long const v = n.attribute_value(k, 0UL);
+						return v ? float(v) * to_design : dflt; };
+					auto col = [&] (char const *k, Scene::Rgba dflt, float alpha) {
+						String<16> const v = n.attribute_value(k, String<16>(""));
+						int c[3] { 0, 0, 0 }; int idx = 0; bool ok = false;
+						for (char const *p = v.string(); *p && idx < 3; ++p) {
+							if (*p >= '0' && *p <= '9') { c[idx] = c[idx] * 10 + (*p - '0'); ok = true; }
+							else if (*p == ',') ++idx;
+						}
+						return ok && idx == 2 ? Scene::Rgba { float(c[0]), float(c[1]), float(c[2]), alpha } : dflt; };
+					fs.border       = len("border",       fs.border);
+					fs.glow_reach   = len("glow_reach",   fs.glow_reach);
+					fs.glow_sigma   = len("glow_sigma",   fs.glow_sigma);
+					fs.shadow_reach = len("shadow_reach", fs.shadow_reach);
+					fs.shadow_sigma = len("shadow_sigma", fs.shadow_sigma);
+					fs.glow     = col("glow",     fs.glow,     float(n.attribute_value("glow_alpha",   58UL)) / 100.0f);
+					fs.shadow   = Scene::Rgba { 0, 0, 0,       float(n.attribute_value("shadow_alpha", 38UL)) / 100.0f };
+					fs.active_a = col("active_a", fs.active_a, 1.0f);
+					fs.active_b = col("active_b", fs.active_b, 1.0f);
+					fs.carbon_a = col("carbon_a", fs.carbon_a, 1.0f);
+					fs.carbon_b = col("carbon_b", fs.carbon_b, 1.0f);
+					_scene_valid = false;
+				});
+
 				/* Plasma-style panels: visibility mode + thickness (design px) */
 				theme.with_optional_sub_node("panels", [&] (Xml_node const &panels) {
 					auto apply = [&] (Scene::Panel &pn, Xml_node const &n) {

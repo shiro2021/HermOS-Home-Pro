@@ -55,6 +55,16 @@ namespace Theme {
 		struct Cmdbar { bool set; int x, y, w, font, pad_x, pad_y, spacing, tip, greet_font, sub_font; };
 		Cmdbar _cb { };
 
+		/* Cell frame look: lengths are fractions of the screen height (1/_scale), alpha in percent,
+		 * colours "R,G,B" (see theme.hid) */
+		struct Frame { bool set; int border, glow_reach, glow_sigma, glow_alpha, shadow_reach, shadow_sigma, shadow_alpha; };
+		Frame _fr { false, 16, 160, 55, 58, 80, 30, 38 };
+		char _fr_glow[16]     { "255,112,22" };
+		char _fr_active_a[16] { "255,200,126" };
+		char _fr_active_b[16] { "226,92,20" };
+		char _fr_carbon_a[16] { "92,96,102" };
+		char _fr_carbon_b[16] { "48,51,56" };
+
 		/* default geometry of a newly launched app Cell */
 		struct Appcell { bool set; int x, y, w, h, cascade; };
 		Appcell _ac { };
@@ -133,7 +143,7 @@ namespace Theme {
 		/* parse the HID: "+"-indented tree with "key: value" lines */
 		void _parse(char const *buf, size_t len)
 		{
-			enum Sect { SECT_NONE, SECT_CELL, SECT_SIDEBAR, SECT_ICONS, SECT_SNAP, SECT_PLEFT, SECT_PBOTTOM, SECT_CMDBAR, SECT_APPCELL } sect = SECT_NONE;
+			enum Sect { SECT_NONE, SECT_CELL, SECT_SIDEBAR, SECT_ICONS, SECT_SNAP, SECT_PLEFT, SECT_PBOTTOM, SECT_CMDBAR, SECT_APPCELL, SECT_FRAME } sect = SECT_NONE;
 			Cell *cur = nullptr;
 			Snap *scur = nullptr;
 
@@ -178,6 +188,7 @@ namespace Theme {
 				else if (Genode::strcmp(word, "panels") == 0) { sect = SECT_NONE;  cur = nullptr; scur = nullptr; }
 				else if (Genode::strcmp(word, "commandbar") == 0) { sect = SECT_CMDBAR; cur = nullptr; scur = nullptr; }
 				else if (Genode::strcmp(word, "appcell") == 0)    { sect = SECT_APPCELL; cur = nullptr; scur = nullptr; }
+				else if (Genode::strcmp(word, "frame") == 0)      { sect = SECT_FRAME;   cur = nullptr; scur = nullptr; }
 				else if (Genode::strcmp(word, "left") == 0)   { sect = SECT_PLEFT;   cur = nullptr; scur = nullptr; }
 				else if (Genode::strcmp(word, "bottom") == 0) { sect = SECT_PBOTTOM; cur = nullptr; scur = nullptr; }
 					continue;
@@ -205,6 +216,16 @@ namespace Theme {
 					static struct { char const *k; int *v; } const map[] = {
 						{ "x", &_ac.x }, { "y", &_ac.y }, { "w", &_ac.w }, { "h", &_ac.h }, { "cascade", &_ac.cascade } };
 					for (auto const &m : map) if (Genode::strcmp(key, m.k) == 0) { *m.v = val; _ac.set = true; }
+				} else if (sect == SECT_FRAME) {
+					static struct { char const *k; int *v; } const map[] = {
+						{ "border", &_fr.border }, { "glow_reach", &_fr.glow_reach }, { "glow_sigma", &_fr.glow_sigma },
+						{ "glow_alpha", &_fr.glow_alpha }, { "shadow_reach", &_fr.shadow_reach },
+						{ "shadow_sigma", &_fr.shadow_sigma }, { "shadow_alpha", &_fr.shadow_alpha } };
+					static struct { char const *k; char *v; } const cols[] = {
+						{ "glow", _fr_glow }, { "active_a", _fr_active_a }, { "active_b", _fr_active_b },
+						{ "carbon_a", _fr_carbon_a }, { "carbon_b", _fr_carbon_b } };
+					for (auto const &m : map)  if (Genode::strcmp(key, m.k) == 0) { *m.v = val; _fr.set = true; }
+					for (auto const &c : cols) if (Genode::strcmp(key, c.k) == 0) { _copy_val(c.v, val_start, le); _fr.set = true; }
 				} else if (sect == SECT_CMDBAR) {
 					static struct { char const *k; int *v; } const map[] = {
 						{ "x", &_cb.x }, { "y", &_cb.y }, { "w", &_cb.w }, { "font", &_cb.font },
@@ -336,6 +357,22 @@ namespace Theme {
 						xml.attribute("tip",        _cb.tip * _screen_h / _scale);
 						xml.attribute("greet_font", _cb.greet_font * _screen_h / _scale);
 						xml.attribute("sub_font",   _cb.sub_font * _screen_h / _scale);
+					});
+					if (_fr.set) xml.node("frame", [&] () {
+						/* lengths in tenths of a screen pixel (borders are fractions of a pixel) */
+						auto px10 = [&] (int v) { return v * _screen_h * 10 / _scale; };
+						xml.attribute("border",       px10(_fr.border));
+						xml.attribute("glow_reach",   px10(_fr.glow_reach));
+						xml.attribute("glow_sigma",   px10(_fr.glow_sigma));
+						xml.attribute("glow_alpha",   _fr.glow_alpha);
+						xml.attribute("shadow_reach", px10(_fr.shadow_reach));
+						xml.attribute("shadow_sigma", px10(_fr.shadow_sigma));
+						xml.attribute("shadow_alpha", _fr.shadow_alpha);
+						xml.attribute("glow",     _fr_glow);
+						xml.attribute("active_a", _fr_active_a);
+						xml.attribute("active_b", _fr_active_b);
+						xml.attribute("carbon_a", _fr_carbon_a);
+						xml.attribute("carbon_b", _fr_carbon_b);
 					});
 					xml.node("panels", [&] () {
 						xml.node("left",   [&] () { xml.attribute("mode", _pl_mode); xml.attribute("size", _pl_size); });
