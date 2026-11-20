@@ -72,6 +72,14 @@ theme
   tip: 244
   greet_font: 322
   sub_font: 154
+# Where a newly launched app Cell opens (1/10000 of the screen; cascade steps each
+# further Cell down and to the right by this fraction of the screen height).
++ appcell
+  x: 600
+  y: 3900
+  w: 6600
+  h: 5900
+  cascade: 300
 # Plasma-style panels. mode: visible | autohide | hidden. size is in design px.
 # Users change these at runtime with Meta+L (left dock) and Meta+B (bottom bar).
 + panels

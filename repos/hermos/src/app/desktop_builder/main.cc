@@ -406,6 +406,10 @@ namespace Hermos {
 		bool _preview     { false };   /* show the mock-up preview windows (config: preview="yes") */
 		bool _ai_waiting  { false };   /* a prompt was sent and no answer has come back yet */
 
+		/* where a newly launched app Cell opens, in pixels (theme `appcell`) */
+		struct App_cell { bool valid { false }; int x { 0 }, y { 0 }, w { 0 }, h { 0 }, cascade { 0 }; };
+		App_cell _appcell { };
+
 		void _draw_icon(char const *name, int cx, int cy)
 		{
 			/* geometric placeholders — no asset pipeline for complex icons yet */
@@ -1960,6 +1964,15 @@ namespace Hermos {
 			if (slot < 0) { log("HermOS: all Cell slots busy"); return; }
 			_app_kind[slot] = kind;
 			_win_open[slot] = true;
+
+			/* open large, from the theme: later Cells cascade so none hides another's title */
+			if (_appcell.valid) {
+				int running = 0;
+				for (int i = 0; i < MAX_APPS; ++i) if (i != slot && _app_kind[i] != APP_NONE) ++running;
+				_geom[slot] = { _appcell.x + running * _appcell.cascade, _appcell.y + running * _appcell.cascade,
+				                _appcell.w, _appcell.h };
+				_bring_to_front(slot);
+			}
 			log("HermOS: launching '", _app_binary(kind), "' into slot ", slot);
 			_emit_apps_config();
 			_dirty = true;
@@ -3607,6 +3620,13 @@ namespace Hermos {
 					_sb_y = (int)sb.attribute_value("y", (unsigned long)_sb_y);
 					_sb_w = (int)sb.attribute_value("w", (unsigned long)_sb_w);
 					_sb_h = (int)sb.attribute_value("h", (unsigned long)_sb_h);
+				});
+
+				theme.with_optional_sub_node("appcell", [&] (Xml_node const &n) {
+					_appcell.x = (int)n.attribute_value("x", 0UL);  _appcell.y = (int)n.attribute_value("y", 0UL);
+					_appcell.w = (int)n.attribute_value("w", 0UL);  _appcell.h = (int)n.attribute_value("h", 0UL);
+					_appcell.cascade = (int)n.attribute_value("cascade", 0UL);
+					_appcell.valid = _appcell.w > 0 && _appcell.h > 0;
 				});
 
 				/* Shiro Command Bar style (canvas pixels, computed by the theme engine) */
