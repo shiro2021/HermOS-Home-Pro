@@ -770,14 +770,14 @@ static inline Ctx make_ctx(Canvas &c, Fonts &f, Assets &a)
 /* Base layer: everything that does not animate with the hideable panels.
  * desktop_builder caches this frame and only redraws it when the windows,
  * the search text or the clock change. */
-static inline void render_base(Canvas &c, Fonts &f, Assets &a, State &st)
+static inline void render_base(Canvas &c, Fonts &f, Assets &a, State &st, bool hide_sidebar = false)
 {
 	Ctx g = make_ctx(c, f, a);
 	draw_wallpaper(g);
 	draw_header(g);
 	draw_greeting_search(g, st);
 	draw_rail(g, st);
-	draw_sidebar(g, st);
+	if (!hide_sidebar) draw_sidebar(g, st);
 
 	/* the six windows, in z-order */
 	for (int oi = 0; oi < 6; ++oi) {

@@ -1691,6 +1691,7 @@ namespace Hermos {
 
 		/* hideable bottom panel (slides up when the cursor hits the bottom edge) */
 		bool _bottom_panel_visible { false };
+		bool _chrome_hidden { false };   /* F11 toggles the right sidebar (Agents & Workers) */
 		int  _panel_y { 0 };          /* top Y of the panel; init to _h in the ctor */
 
 		/* theme state: BYPASSED. These are the hardcoded colors.
@@ -3504,12 +3505,14 @@ namespace Hermos {
 			      _prompt_len ? _prompt : "Ask or describe what you want...");
 			_glyph_chev(_bar_x() + _bar_w() - _bar_h() / 2, _bar_cy());
 
-			/* ---- right panel: Agents & Workers (from the theme_state report) ---- */
-			int const sb_w = _sb_w, sb_h = _sb_h, sb_y = _sb_y;
-			int const sb_x = _sb_x;   /* always visible, matching the concept */
+			/* ---- right panel: Agents & Workers (hideable: F11) ---- */
+			if (!_chrome_hidden) {
+				int const sb_w = _sb_w, sb_h = _sb_h, sb_y = _sb_y;
+				int const sb_x = _sb_x;
 
-			_fill_rrect_glass(sb_x, sb_y, sb_w, sb_h, 14, _sidebar_r, _sidebar_g, _sidebar_b, 205);
-			_stroke_rrect(sb_x, sb_y, sb_w, sb_h, 14, _inactive_r, _inactive_g, _inactive_b);
+				_fill_rrect_glass(sb_x, sb_y, sb_w, sb_h, 14, _sidebar_r, _sidebar_g, _sidebar_b, 205);
+				_stroke_rrect(sb_x, sb_y, sb_w, sb_h, 14, _inactive_r, _inactive_g, _inactive_b);
+			}
 
 			/* sidebar content drawn by _draw_sidebar_content() over the composited panel */
 			/* ---- status bar (taskbar, docked at the BOTTOM as in the mockup) ---- */
@@ -3539,8 +3542,10 @@ namespace Hermos {
 				                          "Software & Updates" };
 
 				/* Step 5b: the sidebar panel sits BEHIND the cells */
-				_blit_sidebar();
-				_draw_sidebar_content(surface);
+				if (!_chrome_hidden) {
+					_blit_sidebar();
+					_draw_sidebar_content(surface);
+				}
 
 				for (int oi = 0; oi < NUM_CELLS; ++oi) {
 					int const i = _draw_order[oi];
@@ -4023,7 +4028,7 @@ namespace Hermos {
 				mix(unsigned(st.win[i].x)); mix(unsigned(st.win[i].y)); mix(unsigned(st.win[i].w)); mix(unsigned(st.win[i].h));
 				mix(st.win_open[i]); mix(st.win_hosted[i]); mix(unsigned(st.order[i]));
 			}
-			mix(unsigned(st.active_win)); mix(st.search_focus);
+			mix(unsigned(st.active_win)); mix(st.search_focus); mix(unsigned(_chrome_hidden));
 			for (char const *c = st.clock; c && *c; ++c) mix(unsigned(*c));
 			for (char const *c = st.prompt; c && *c; ++c) mix(unsigned(*c));
 			return h;
@@ -4035,7 +4040,7 @@ namespace Hermos {
 			unsigned const hsh = _scene_state_hash();
 			if (!_scene_valid || hsh != _scene_hash) {
 				Scene::Canvas c { _scene_px, _w, _h };
-				Scene::render_base(c, _sfonts, _sassets, _sstate);
+				Scene::render_base(c, _sfonts, _sassets, _sstate, _chrome_hidden);
 				_scene_hash = hsh; _scene_valid = true;
 			}
 			Genode::memcpy(_px, _scene_px, size_t(_w) * size_t(_h) * 4);
@@ -4159,6 +4164,9 @@ namespace Hermos {
 
 		void _handle_timer()
 		{
+			/* re-render on any pending dirty flag (input, theme, F11, etc.) */
+			if (_dirty) { _render(); _dirty = false; }
+
 			/* drive the installer's format + copy while installing */
 			if (_installer_mode && _install_phase != INST_IDLE && _install_phase != INST_DONE) {
 				_install_tick();
@@ -4435,6 +4443,7 @@ namespace Hermos {
 				});
 
 				ev.handle_press([&] (Input::Keycode key, Input::Codepoint cp) {
+					if (key == Input::KEY_F11) { _chrome_hidden = !_chrome_hidden; _dirty = true; log("HermOS F11: chrome_hidden=", (int)_chrome_hidden); return; }
 					if (key == Input::KEY_LEFTMETA || key == Input::KEY_RIGHTMETA) {
 						_meta_down = true;
 						return;
