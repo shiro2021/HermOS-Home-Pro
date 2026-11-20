@@ -65,28 +65,57 @@ namespace Hermos {
 				void sync_source(Session_label const &) override { }
 			};
 
-			/* panorama/info ROM served to the client (static, minimal) */
+			/*
+			 * Info ROM served to the client: <info xpos ypos width height/> is the size of the Cell's
+			 * content area. Every change gets a fresh dataspace and a signal, so clients such
+			 * as the terminal re-layout to the Cell instead of being stretched.
+			 */
 			struct Info_rom : Rpc_object<Rom_session>
 			{
 				Entrypoint &_ep;
-				Attached_ram_dataspace _ds;
+				Env        &_env;
+				/* a ring of dataspaces: a client keeps the one it mapped until it re-reads, so the
+				 * newest few stay alive and only the oldest is released */
+				enum { RING = 4 };
+				Constructible<Attached_ram_dataspace> _ring[RING] { };
+				unsigned _cur { 0 };
+				Signal_context_capability _sigh { };
+				bool _fresh { false };
+				unsigned _w { 0 }, _h { 0 };
 
-				Info_rom(Entrypoint &ep, Env &env, char const *content, size_t len)
-				: _ep(ep), _ds(env.ram(), env.rm(), len)
+				Info_rom(Entrypoint &ep, Env &env) : _ep(ep), _env(env)
 				{
-					Genode::memcpy(_ds.local_addr<char>(), content, len);
+					_write(560, 340);                /* until the compositor assigns the Cell size */
 					_ep.manage(*this);
 				}
 				~Info_rom() { _ep.dissolve(*this); }
 
+				void _write(unsigned w, unsigned h)
+				{
+					String<96> const xml("<info xpos=\"0\" ypos=\"0\" width=\"", w, "\" height=\"", h, "\"/>");
+					_cur = (_cur + 1) % RING;
+					if (_ring[_cur].constructed()) _ring[_cur].destruct();
+					_ring[_cur].construct(_env.ram(), _env.rm(), xml.length() - 1);   /* length() counts the NUL */
+					Genode::memcpy(_ring[_cur]->local_addr<char>(), xml.string(), xml.length() - 1);
+					_w = w; _h = h; _fresh = true;
+				}
+
+				void set_size(unsigned w, unsigned h)
+				{
+					if (w == _w && h == _h) return;
+					_write(w, h);
+					if (_sigh.valid()) Signal_transmitter(_sigh).submit();
+				}
+
 				Rom_dataspace_capability dataspace() override
 				{
-					Dataspace_capability ds_cap = _ds.cap();
+					Dataspace_capability ds_cap = _ring[_cur]->cap();
 					return static_cap_cast<Rom_dataspace>(ds_cap);
 				}
 
-				void sigh(Signal_context_capability) override { }
-				bool update() override { return false; }
+				void sigh(Signal_context_capability sigh) override { _sigh = sigh; }
+				/* true = the client's dataspace is still current; false = it must request the new one */
+				bool update() override { bool const fresh = _fresh; _fresh = false; return !fresh; }
 			};
 
 			/* trivial view-capability object (Gui::View has no RPC methods) */
@@ -113,7 +142,7 @@ namespace Hermos {
 
 			Fb_session _fb { _env.ep(), *this };
 			View_rpc   _view_rpc { };
-			Info_rom   _info_rom { _env.ep(), _env, _info_xml, sizeof(_info_xml) - 1 };
+			Info_rom   _info_rom { _env.ep(), _env };
 
 			No_input_action          _input_action { };
 			Input::Session_component _input { _env.ep(), _env.ram(), _env.rm(),
@@ -121,9 +150,6 @@ namespace Hermos {
 
 			Gui::Title  _title { };
 			View_entry  _views[MAX_VIEWS] { };
-
-			static constexpr char const _info_xml[] =
-				"<info x=\"0\" y=\"0\" w=\"200\" h=\"200\"/>";
 
 			View_entry *_find(View_id id)
 			{
@@ -181,6 +207,9 @@ namespace Hermos {
 			int  fb_w() const { return int(_mode.area.w); }
 			int  fb_h() const { return int(_mode.area.h); }
 			Pixel const *fb_pixels() const { return _fb_ds->local_addr<Pixel const>(); }
+
+			/* tell the hosted app how large its content area is (no-op when unchanged) */
+			void set_content_size(unsigned w, unsigned h) { _info_rom.set_size(w, h); }
 
 			/* forward a desktop input event into the hosted app */
 			void submit_input(Input::Event const &ev) { _input.submit(ev); }

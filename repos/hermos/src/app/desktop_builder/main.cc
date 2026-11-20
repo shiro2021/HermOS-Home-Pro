@@ -1960,6 +1960,9 @@ namespace Hermos {
 			Content const k = _content(i);
 			if (k.r <= k.l || k.b <= k.t) return;
 
+			/* the app lays itself out to the Cell (1:1); while a drag is running it is only stretched */
+			if (_drag_mode == DRAG_NONE) hosted->set_content_size(unsigned(k.r - k.l), unsigned(k.b - k.t));
+
 			for (int py = k.t; py < k.b; ++py) {
 				int const sy = (py - k.t) * sh / (k.b - k.t);
 				int xl, xr; _content_span(k, py, xl, xr);

@@ -61,7 +61,7 @@ function carries one of these marks:
 | Cell drag by the title strip | VERIFIED | Moves; a grab in the top 10 px is an edge resize, not a move. |
 | Cell edge resize, snap to screen edges | BUILT | Resize starts (edge detection verified); snap not re-tested. |
 | Hosted Cell: title, minimise, maximise, close; opaque; true z-order | VERIFIED | Strip geometry derives from the Cell's own size. Minimise and taskbar restore tested; restore no longer reopens the mock-up Cells. |
-| Hosted app resize on Cell resize/maximise | ABSENT | The app's buffer is stretched; the Gui server never signals a new mode (`mode_sigh` is a stub). |
+| Hosted app follows its Cell's size (Gui `info` ROM `xpos ypos width height`, signalled on change) | VERIFIED | Terminal re-lays out to the Cell at launch and on maximise (1:1, no stretching). While a drag is running the old buffer is stretched; the new size is applied on release. Apps that ignore the info ROM (Files) still stretch. |
 | Tiling and quick-tile (`Meta+T`, `Meta+arrows`, `Home/End/PgUp/PgDn`, `F`, `R`) | BUILT | Legacy code, untested. |
 | Hosted apps (render inside Cells, receive input) | VERIFIED | Terminal and Files; Cell numbering bug fixed. |
 | Theme (`theme.hid` → `theme_state`, 1/10000 geometry, panel modes) | VERIFIED | |
