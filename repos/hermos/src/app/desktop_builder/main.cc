@@ -451,39 +451,140 @@ namespace Hermos {
 		Constructible<Block::Connection<>> _block { };
 		void _block_signal() { }
 		Io_signal_handler<Main> _block_sigh { _env.ep(), *this, &Main::_block_signal };
-		bool _block_connected { false };
 
-		/* Connect the Block session lazily (on installer launch). A bare ISO
-		   with no disk would hang here at boot — the base-lib maps DENIED to
-		   sleep_forever(), not a throw — so connect only when the installer is
-		   actually launched. */
-		void _connect_block()
+		/* ---- target disks (from the drivers' ahci/nvme reports) ----
+		 *
+		 * The installer only ever opens a Block session for a disk that one of
+		 * the drivers has actually reported. A session for a missing device
+		 * would be denied, and Genode's client library then sleeps forever,
+		 * freezing the whole desktop. Each disk has a pre-declared policy
+		 * label (ahci<port> / nvme0) in the drivers' configuration. */
+		struct Disk
 		{
-			if (_block_connected) return;
-			_block_connected = true;
-			log("HermOS block: connecting to Block session...");
+			bool                nvme { false };
+			Genode::String<16>  label { };
+			Genode::String<64>  model { };
+			uint64_t            block_count { 0 };
+			unsigned            block_size  { 0 };
+
+			uint64_t bytes() const { return block_count * block_size; }
+		};
+		enum { MAX_DISKS = 12 };
+		Disk _disks[MAX_DISKS] { };
+		int  _disk_count { 0 };
+		int  _disk_sel   { 0 };
+
+		Constructible<Attached_rom_dataspace> _ahci_ports { };
+		Constructible<Attached_rom_dataspace> _nvme_ctrl  { };
+		Signal_handler<Main> _disks_sigh { _env.ep(), *this, &Main::_handle_disks };
+
+		void _add_disk(bool nvme, char const *label, char const *model, uint64_t count, unsigned bs)
+		{
+			if (_disk_count >= MAX_DISKS) return;
+			Disk &d = _disks[_disk_count++];
+			d.nvme = nvme; d.label = label; d.model = model; d.block_count = count; d.block_size = bs;
+		}
+
+		void _handle_disks()
+		{
+			if (_ahci_ports.constructed()) _ahci_ports->update();
+			if (_nvme_ctrl.constructed())  _nvme_ctrl->update();
+
+			Genode::String<16> const prev = (_disk_count > 0 && _disk_sel < _disk_count)
+			                              ? _disks[_disk_sel].label : Genode::String<16>();
+			_disk_count = 0;
+
+			if (_ahci_ports.constructed())
+				_ahci_ports->node().for_each_sub_node("port", [&] (Node const &port) {
+					if (port.attribute_value("type", Genode::String<8>()) != "ATA") return;
+					unsigned const num = port.attribute_value("num", 0u);
+					Genode::String<16> const label("ahci", num);
+					_add_disk(false, label.string(),
+					          port.attribute_value("model", Genode::String<64>("SATA disk")).string(),
+					          port.attribute_value("block_count", (uint64_t)0),
+					          port.attribute_value("block_size", 0u));
+				});
+
+			if (_nvme_ctrl.constructed())
+				_nvme_ctrl->node().with_optional_sub_node("namespace", [&] (Node const &ns) {
+					Genode::String<64> const model =
+						_nvme_ctrl->node().attribute_value("model", Genode::String<64>("NVMe disk"));
+					_add_disk(true, "nvme0", model.string(),
+					          ns.attribute_value("block_count", (uint64_t)0),
+					          ns.attribute_value("block_size", 0u));
+				});
+
+			/* keep the same disk selected when the list changes */
+			_disk_sel = 0;
+			for (int i = 0; i < _disk_count; ++i)
+				if (_disks[i].label == prev) _disk_sel = i;
+			_select_disk(_disk_sel);
+			log("HermOS installer: ", _disk_count, " installable disk(s) found");
+			for (int i = 0; i < _disk_count; ++i)
+				log("  ", _disks[i].label.string(), ": ", _disks[i].model.string(), ", ",
+				    (unsigned)(_disks[i].bytes() / (1024ull * 1024 * 1024)), " GB, ",
+				    _disks[i].block_size, " B/sector");
+			_dirty = true;
+		}
+
+		/* capacity limit of the selected disk; the partition table needs
+		 * 1 MiB in front, the 200 MiB EFI partition and 1 MiB for the backup GPT */
+		void _select_disk(int i)
+		{
+			if (_disk_count == 0) { _disk_sel = 0; _max_gb = 0; return; }
+			_disk_sel = i < 0 ? _disk_count - 1 : (i >= _disk_count ? 0 : i);
+			Disk const &d = _disks[_disk_sel];
+			uint64_t const reserve = 202ull * 1024 * 1024;
+			uint64_t const usable  = d.bytes() > reserve ? d.bytes() - reserve : 0;
+			_max_gb   = usable / (1024ull * 1024 * 1024);
+			_alloc_gb = _max_gb;
+		}
+
+		/* The ROM "hermos-system.img" is the system image the installer copies to
+		 * disk: a complete GPT disk image of this very system. Images built
+		 * without a payload carry a short stub instead. */
+		bool _payload_ok() const
+		{
+			if (_system_img.size() < (1u << 20)) return false;
+			char const *p = _system_img.local_addr<char>() + 512;
+			char const sig[8] = { 'E','F','I',' ','P','A','R','T' };
+			for (int i = 0; i < 8; ++i) if (p[i] != sig[i]) return false;
+			return true;
+		}
+
+		/* the installer's disk layout code addresses the disk in 512-byte sectors */
+		bool _install_ready() const
+		{
+			return _payload_ok() && _disk_count > 0 && _disks[_disk_sel].block_size == 512 && _max_gb >= 1;
+		}
+
+		/* Connect the Block session of the selected disk (on install start). */
+		bool _connect_block()
+		{
+			if (_block.constructed()) return true;
+			if (!_install_ready()) return false;
+			Disk const &d = _disks[_disk_sel];
+			log("HermOS block: connecting to ", d.label.string(), " (", d.model.string(), ")");
 			try {
-				_block.construct(_env, &_block_alloc, 4 * 1024 * 1024);
+				_block.construct(_env, &_block_alloc, 4 * 1024 * 1024,
+				                 Genode::Session_label(d.label.string()));
 				_block->sigh(_block_sigh);
-				log("HermOS block: connected, reading info...");
 				_blk_info = _block->info();
-				uint64_t const bytes = (uint64_t)_blk_info.block_size * _blk_info.block_count;
-				unsigned const gb = (unsigned)(bytes / (1024ULL * 1024ULL * 1024ULL));
-				_disk_size = Genode::String<32>(gb, " GB");
-				size_t const bs = _blk_info.block_size;
-				uint64_t const bc = _blk_info.block_count;
-				uint64_t const gb_sectors  = (1024ull * 1024 * 1024) / bs;
-				uint64_t const efi_sectors = (200ull * 1024 * 1024) / bs;
-				uint64_t const overhead    = 67 + efi_sectors;
-				_max_gb = (bc > overhead) ? (bc - overhead) / gb_sectors : 0;
-				if (_max_gb < 1) _max_gb = 1;
-				_alloc_gb = _max_gb;
-				log("HermOS block: block_size=", bs, " block_count=", bc, " => ", _disk_size.string(),
-				    " (max alloc ", (unsigned)_max_gb, " GB)");
+				{ unsigned long const bsz = _blk_info.block_size, bcn = _blk_info.block_count; log("HermOS block: block_size=", bsz, " block_count=", bcn); }
+				return _blk_info.block_size == 512 && _blk_info.block_count == d.block_count;
 			} catch (...) {
-				_disk_size = "20 GB";
-				log("HermOS block: no Block session available (fallback 20 GB)");
+				log("HermOS block: connecting to ", d.label.string(), " failed");
+				return false;
 			}
+		}
+
+		/* ask the platform driver to reset the machine (ACPI reset register) */
+		Reporter _system_report { _env, "system", "system", 256 };
+		void _reboot()
+		{
+			log("HermOS: reboot requested");
+			_system_report.enabled(true);
+			(void)_system_report.generate_xml([&] (Xml_generator &g) { g.attribute("state", "reset"); });
 		}
 
 		/* app launcher: report_rom-driven config for the nested "apps" init */
@@ -2286,13 +2387,17 @@ namespace Hermos {
 	bool _ihit_next(int x, int y) const
 	{ return x >= _w/2 + 240 && x < _w/2 + 420 && y >= _iby() && y < _iby() + 36; }
 	bool _ihit_confirm(int x, int y) const
-	{ return x >= _w/2 - 280 && x < _w/2 - 262 && y >= 540 && y < 558; }
+	{ return x >= _w/2 - 280 && x < _w/2 - 262 && y >= 560 && y < 578; }
 	bool _ihit_minus(int x, int y) const
-	{ return x >= _w/2 - 240 && x < _w/2 - 196 && y >= 342 && y < 378; }
+	{ return x >= _w/2 - 240 && x < _w/2 - 196 && y >= 384 && y < 420; }
 	bool _ihit_plus(int x, int y) const
-	{ return x >= _w/2 + 196 && x < _w/2 + 240 && y >= 342 && y < 378; }
+	{ return x >= _w/2 + 196 && x < _w/2 + 240 && y >= 384 && y < 420; }
 	bool _ihit_mykee(int x, int y) const
-	{ return x >= _w/2 - 280 && x < _w/2 + 280 && y >= 450 && y < 498; }
+	{ return x >= _w/2 - 280 && x < _w/2 + 280 && y >= 472 && y < 520; }
+	bool _ihit_disk_prev(int x, int y) const
+	{ return x >= _w/2 - 268 && x < _w/2 - 224 && y >= 286 && y < 322; }
+	bool _ihit_disk_next(int x, int y) const
+	{ return x >= _w/2 + 224 && x < _w/2 + 268 && y >= 286 && y < 322; }
 
 	void _regenerate_mykee()
 	{
@@ -2305,13 +2410,16 @@ namespace Hermos {
 	{
 		/* V3 3-step installer: 0 = INST_SETUP, 1 = INST_ACTION, 2 = INST_COMPLETE */
 		if (_installer_step == 0) {
+			if (_ihit_disk_prev(x, y)) { _select_disk(_disk_sel - 1); _installer_confirm = false; _dirty = true; return; }
+			if (_ihit_disk_next(x, y)) { _select_disk(_disk_sel + 1); _installer_confirm = false; _dirty = true; return; }
 			if (_ihit_minus(x, y)) { if (_alloc_gb > 1)      { --_alloc_gb; _dirty = true; } return; }
 			if (_ihit_plus(x, y))  { if (_alloc_gb < _max_gb) { ++_alloc_gb; _dirty = true; } return; }
 			if (_ihit_mykee(x, y)) { _regenerate_mykee(); _dirty = true; return; }
 			if (_ihit_confirm(x, y)) { _installer_confirm = !_installer_confirm; _dirty = true; return; }
-			if (_ihit_next(x, y) && _installer_confirm) {
-				_connect_block(); _install_start(); _installer_step = 1; _dirty = true;
-				log("HermOS installer: INST_ACTION"); return;
+			if (_ihit_next(x, y) && _installer_confirm && _install_ready()) {
+				if (!_connect_block()) { log("HermOS installer: cannot open the target disk"); _dirty = true; return; }
+				_install_start(); _installer_step = 1; _dirty = true;
+				log("HermOS installer: INST_ACTION -> ", _disks[_disk_sel].label.string()); return;
 			}
 			if (_ihit_back(x, y)) { _installer_mode = false; _dirty = true;
 			                        log("HermOS installer: cancelled -> desktop"); return; }
@@ -2319,8 +2427,9 @@ namespace Hermos {
 		}
 		if (_installer_step == 1) return;   /* installing: timer-driven */
 		if (_installer_step == 2) {
-			if (_ihit_next(x, y) || _ihit_back(x, y)) { _installer_mode = false; _dirty = true;
-			                                            log("HermOS installer: INST_COMPLETE -> desktop"); }
+			if (_ihit_next(x, y)) { _reboot(); return; }
+			if (_ihit_back(x, y)) { _installer_mode = false; _dirty = true;
+			                        log("HermOS installer: INST_COMPLETE -> desktop"); }
 			return;
 		}
 	}
@@ -3339,33 +3448,55 @@ namespace Hermos {
 		/* V3 3-step installer: 0 = INST_SETUP, 1 = INST_ACTION, 2 = INST_COMPLETE */
 		switch (_installer_step) {
 		case 0: {
-			_text(s, _icx(26.0f, "Install HermOS"), 180, 26.0f, _white(), "Install HermOS");
-			_text(s, _icx(13.0f, "Live OS — set up your computer in 3 steps."), 224, 13.0f, _muted(),
-			      "Live OS — set up your computer in 3 steps.");
+			_text(s, _icx(26.0f, "Install HermOS"), 170, 26.0f, _white(), "Install HermOS");
+			_text(s, _icx(13.0f, "Choose a disk. Everything on it will be replaced."), 212, 13.0f, _muted(),
+			      "Choose a disk. Everything on it will be replaced.");
 
-			/* disk size slider */
-			_text(s, _w / 2 - 280, 296, 12.0f, _muted(), "Disk size");
-			_fill_rrect(_w / 2 - 280, 330, 560, 60, 12, 24, 34, 48);
-			_stroke_rrect(_w / 2 - 280, 330, 560, 60, 12, _accent_r, _accent_g, _accent_b);
-			_stepper_btn(s, _w / 2 - 240, 342, 44, 36, false);
-			Genode::String<16> alloc { (unsigned)_alloc_gb, " GB" };
-			_text(s, _icx(15.0f, alloc.string()), 352, 15.0f, _white(), alloc.string());
-			_stepper_btn(s, _w / 2 + 196, 342, 44, 36, true);
+			/* target disk */
+			int const dx = _w / 2 - 280;
+			_text(s, dx, 250, 12.0f, _muted(), "Target disk");
+			_fill_rrect(dx, 272, 560, 64, 12, 24, 34, 48);
+			_stroke_rrect(dx, 272, 560, 64, 12, _accent_r, _accent_g, _accent_b);
+			if (_disk_count > 0) {
+				Disk const &d = _disks[_disk_sel];
+				_button(s, dx + 12, 286, 44, 36, "<", false);
+				_button(s, dx + 504, 286, 44, 36, ">", false);
+				Genode::String<128> const line(d.nvme ? "NVMe  " : "SATA  ", d.model, "  -  ",
+				                               (unsigned)(d.bytes() / (1024ull * 1024 * 1024)), " GB");
+				_clip_text(s, dx + 70, 282, 14.0f, 420, _white(), line.string());
+				Genode::String<64> const sub("Disk ", _disk_sel + 1, " of ", _disk_count,
+				                             d.block_size == 512 ? "" : "   (unsupported sector size)");
+				_text(s, dx + 70, 308, 11.0f, d.block_size == 512 ? _muted() : _solar(), sub.string());
+			} else {
+				_text(s, dx + 24, 293, 14.0f, _solar(), "No disk found. Attach a SATA or NVMe disk.");
+			}
+			if (!_payload_ok())
+				_text(s, dx, 600, 12.0f, _solar(),
+				      "This image carries no installer payload; it can only run live.");
+
+			/* HermOS partition size (limit comes from the selected disk) */
+			_text(s, dx, 352, 12.0f, _muted(), "HermOS partition size");
+			_fill_rrect(dx, 372, 560, 60, 12, 24, 34, 48);
+			_stroke_rrect(dx, 372, 560, 60, 12, _accent_r, _accent_g, _accent_b);
+			_stepper_btn(s, _w / 2 - 240, 384, 44, 36, false);
+			Genode::String<32> alloc { (unsigned)_alloc_gb, " GB  (max ", (unsigned)_max_gb, ")" };
+			_text(s, _icx(15.0f, alloc.string()), 394, 15.0f, _white(), alloc.string());
+			_stepper_btn(s, _w / 2 + 196, 384, 44, 36, true);
 
 			/* MyKee key */
-			_text(s, _w / 2 - 280, 416, 12.0f, _muted(), "MyKee Key (AI router)");
-			_fill_rrect(_w / 2 - 280, 450, 560, 48, 12, 24, 34, 48);
-			_stroke_rrect(_w / 2 - 280, 450, 560, 48, 12, _accent_r, _accent_g, _accent_b);
-			_text(s, _w / 2 - 260, 464, 14.0f, _solar(), _mykee_key.string());
+			_text(s, dx, 452, 12.0f, _muted(), "MyKee Key (AI router)");
+			_fill_rrect(dx, 472, 560, 48, 12, 24, 34, 48);
+			_stroke_rrect(dx, 472, 560, 48, 12, _accent_r, _accent_g, _accent_b);
+			_text(s, dx + 20, 486, 14.0f, _solar(), _mykee_key.string());
 
 			/* confirmation checkbox */
-			_fill_rrect(_w / 2 - 280, 540, 18, 18, 4, 40, 48, 60);
-			_stroke_rrect(_w / 2 - 280, 540, 18, 18, 4, _accent_r, _accent_g, _accent_b);
-			if (_installer_confirm) _glyph_check(_w / 2 - 271, 549);
-			_text(s, _w / 2 - 254, 542, 12.0f, _white(),
-			      "I understand this will format the disk and erase all data");
+			_fill_rrect(dx, 560, 18, 18, 4, 40, 48, 60);
+			_stroke_rrect(dx, 560, 18, 18, 4, _accent_r, _accent_g, _accent_b);
+			if (_installer_confirm) _glyph_check(dx + 9, 569);
+			_text(s, dx + 26, 562, 12.0f, _white(),
+			      "I understand this will erase the selected disk");
 
-			_installer_nav(s, true, "Install HermOS", _installer_confirm);
+			_installer_nav(s, true, "Install HermOS", _installer_confirm && _install_ready());
 			break;
 		}
 		case 1: {
@@ -4573,6 +4704,11 @@ namespace Hermos {
 			_pointer_y = _h / 2;
 
 			_init_scene();
+
+			/* installable disks, reported by the ahci/nvme drivers */
+			try { _ahci_ports.construct(_env, "ahci_ports"); _ahci_ports->sigh(_disks_sigh); } catch (...) { }
+			try { _nvme_ctrl.construct(_env, "nvme_controller"); _nvme_ctrl->sigh(_disks_sigh); } catch (...) { }
+			_handle_disks();
 
 			/* read the wall clock (best-effort; the desktop still boots without it) */
 			try { _rtc.construct(_env); }

@@ -45,6 +45,7 @@ build {
 	server/event_to_input server/report_rom timer
 	driver/rtc
 	driver/ahci
+	driver/nvme
 	test/nitpicker
 }
 
@@ -91,6 +92,8 @@ config
   + provides | + service Block
   + route
     + service ROM | label: config | + parent | label: hermos_drivers.config
+    + service ROM | label: platform -> system | + child report_rom
+    + service Report | + child report_rom
     + service Timer | + child timer
     + service Event | + child event_to_input
     + service Uplink | + child nic_router
@@ -124,6 +127,9 @@ config
     + policy | label: hermes_agent -> ui_intent     | report: desktop_builder -> ui_intent
     + policy | label: desktop_builder -> ai_command | report: hermes_agent -> ai_command
     + policy | label: desktop_builder -> theme_state | report: desktop_builder -> theme_state
+    + policy | label: desktop_builder -> ahci_ports | report: drivers -> ahci -> ports
+    + policy | label: desktop_builder -> nvme_controller | report: drivers -> nvme -> controller
+    + policy | label: drivers -> platform -> system | report: desktop_builder -> system
     + policy | label: theme_engine -> screen_state | report: desktop_builder -> screen_state
     + policy | label: desktop_builder -> dock_state | report: bottom_dock -> dock_state
   + route
@@ -146,6 +152,8 @@ config
     + service ROM | label: ai_command | + child report_rom
     + service ROM | label: theme_state | + child report_rom
     + service ROM | label: dock_state | + child report_rom
+    + service ROM | label: ahci_ports | + child report_rom
+    + service ROM | label: nvme_controller | + child report_rom
     + service Rtc         | + child pc_rtc
     + service Timer       | + child timer
     + service Block       | + child drivers
@@ -239,11 +247,16 @@ config
   + service Timer
   + service Event
   + service Uplink
+  + service Report
 
 + default | caps: 300 | ram: 32M
 
 + service Nic | + default-policy | + child nic
-+ service Block | + default-policy | + child ahci
+# The installer opens one Block session per disk it found in the reports,
+# labelled ahci<port> / nvme<n>; each label has its own policy below.
++ service Block
+  + policy | label_prefix: desktop_builder -> ahci | + child ahci
+  + policy | label_prefix: desktop_builder -> nvme | + child nvme
 
 + start acpi | caps: 250 | ram: 4M
   + route
@@ -300,6 +313,7 @@ config
     + policy | label_prefix: usb | info: yes | + pci | class: USB
     + policy | label_prefix: nic | info: yes | + pci | class: ETHERNET
     + policy | label_prefix: ahci | + pci | class: AHCI
+    + policy | label_prefix: nvme | + pci | class: NVME
 
 + start usb | caps: 200 | ram: 16M
   + binary pc_usb_host
@@ -355,11 +369,31 @@ config
   + provides | + service Block
   + config | atapi: no
     + report | ports: yes
-    + default-policy | device: 0 | writeable: yes
+    + policy | label: desktop_builder -> ahci0 | device: 0 | writeable: yes
+    + policy | label: desktop_builder -> ahci1 | device: 1 | writeable: yes
+    + policy | label: desktop_builder -> ahci2 | device: 2 | writeable: yes
+    + policy | label: desktop_builder -> ahci3 | device: 3 | writeable: yes
+    + policy | label: desktop_builder -> ahci4 | device: 4 | writeable: yes
+    + policy | label: desktop_builder -> ahci5 | device: 5 | writeable: yes
+    + policy | label: desktop_builder -> ahci6 | device: 6 | writeable: yes
+    + policy | label: desktop_builder -> ahci7 | device: 7 | writeable: yes
   + route
     + service Dma      | + child platform
     + service Platform | + child platform
-    + service Report   | + child report_rom
+    + service Report   | + parent
+    + any-service
+      + parent
+      + any-child
+
++ start nvme | caps: 200 | ram: 24M
+  + provides | + service Block
+  + config | max_hmb_size: 16M
+    + report | namespaces: yes
+    + policy | label: desktop_builder -> nvme0 | writeable: yes
+  + route
+    + service Dma      | + child platform
+    + service Platform | + child platform
+    + service Report   | + parent
     + any-service
       + parent
       + any-child
@@ -390,6 +424,17 @@ close $term_config_fd
 
 # The C++ agent (hermes_agent_cpp) is built by the Genode build system and is
 # included in build_artifacts; no manual copy is needed.
+
+# The installer payload: a complete GPT system disk image of this composition
+# (the output of an `image/disk` build of this same run script). A system-image
+# build, or a build without --hermos-system-image, embeds a marked stub instead,
+# and the installer then refuses to install.
+set payload [cmd_arg --hermos-system-image ""]
+if {$payload ne ""} {
+	exec cp $payload bin/hermos-system.img
+} else {
+	exec sh -c "printf 'HERMOS-NO-INSTALLER-PAYLOAD' > bin/hermos-system.img"
+}
 
 # package the stb UI assets (font + icons) as ROMs mounted at /assets
 set asset_dir [genode_dir]/repos/hermos/src/app/desktop_builder/assets
