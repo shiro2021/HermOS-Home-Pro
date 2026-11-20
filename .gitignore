@@ -24,3 +24,6 @@ dep/
 # QEMU / test artifacts
 artifacts/
 *.serial.log
+
+# local secrets — never commit
+repos/hermos/run/mykee.key

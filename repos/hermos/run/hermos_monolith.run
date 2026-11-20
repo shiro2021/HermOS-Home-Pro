@@ -34,6 +34,7 @@ build {
 	core init lib/ld
 	app/desktop_builder driver/framebuffer/hermos_fb
 	app/hermes_agent_cpp
+	app/mykee_router
 	app/menu_view
 	app/theme_engine
 	app/bottom_dock
@@ -102,11 +103,12 @@ config
     + service Uplink
   + config | verbose_domain_state: yes
     + policy | label_prefix: hermes_agent | domain: downlink
+    + policy | label_prefix: mykee_router | domain: downlink
     + policy | label_prefix: drivers | domain: uplink
     + domain uplink
       + nat | domain: downlink | tcp-ports: 16384 | udp-ports: 16384 | icmp-ids: 16384
     + domain downlink | interface: 10.0.3.1/24
-      + dhcp-server | ip_first: 10.0.3.2 | ip_last: 10.0.3.2 | dns_config_from: uplink
+      + dhcp-server | ip_first: 10.0.3.2 | ip_last: 10.0.3.10 | dns_config_from: uplink
       + tcp | dst: 0.0.0.0/0 | + permit-any | domain: uplink
       + udp | dst: 0.0.0.0/0 | + permit-any | domain: uplink
       + icmp | dst: 0.0.0.0/0 | domain: uplink
@@ -123,6 +125,8 @@ config
     + policy | label: apps -> state  | report: apps -> state
     + policy | label: hermes_agent -> ui_intent     | report: desktop_builder -> ui_intent
     + policy | label: desktop_builder -> ai_command | report: hermes_agent -> ai_command
+    + policy | label: mykee_router -> mykee_request   | report: hermes_agent -> mykee_request
+    + policy | label: hermes_agent -> mykee_response  | report: mykee_router -> mykee_response
     + policy | label: desktop_builder -> theme_state | report: desktop_builder -> theme_state
     + policy | label: theme_engine -> screen_state | report: desktop_builder -> screen_state
     + policy | label: desktop_builder -> dock_state | report: bottom_dock -> dock_state
@@ -183,6 +187,7 @@ config
   + binary hermes_agent_cpp
   + route
     + service ROM | label: ui_intent | + child report_rom
+    + service ROM | label: mykee_response | + child report_rom
     + service Report | + child report_rom
     + service ROM | label_suffix: .lib.so | + parent
     + service Timer | + child timer
@@ -205,7 +210,39 @@ config
         + rom | name: ui_intent | label: ui_intent | binary: no
       + dir ai
         + report | name: ai_command | label: ai_command | buffer: 4096
-        + inline mykee.key | : sk-0dc7c44723d84f30a4f390170e0ab4d3
+      + dir mykee
+        + report | name: mykee_request | label: mykee_request | buffer: 4096
+        + rom | name: mykee_response | label: mykee_response | binary: no
+
++ start mykee_router | caps: 1500 | ram: 64M
+  + binary mykee_router
+  + route
+    + service ROM | label: mykee_request | + child report_rom
+    + service Report | + child report_rom
+    + service ROM | label_suffix: .lib.so | + parent
+    + service Timer | + child timer
+    + service Nic | + child nic_router
+    + service Rtc | + child pc_rtc
+    + any-service | + parent
+  + config
+    + libc | stdout: /dev/log | stderr: /dev/log | socket: /socket | rng: /dev/random | pipe: /pipe | rtc: /dev/rtc
+    + vfs
+      + dir dev
+        + log
+        + null
+        + rtc
+        + inline random | : 0123456789012345678901234567890123456789
+      + dir socket
+        + lwip | dhcp: yes
+      + dir pipe
+        + pipe
+      + dir config
+        + inline mykee.conf | : {"routes":[{"name":"master-proxy","url":"https://api.deepseek.com/chat/completions","model":"deepseek-chat"}]}
+      + dir ai
+                + rom | name: mykee.key | binary: no
+      + dir mykee
+        + rom | name: mykee_request | label: mykee_request | binary: no
+        + report | name: mykee_response | label: mykee_response | buffer: 4096
 
 + start apps | caps: 6000 | ram: 300M
   + binary init
@@ -411,8 +448,9 @@ exec cp $asset_dir/icon_leaf.png bin/icon_leaf.png
 exec cp $asset_dir/apps.registry bin/registry
 exec cp $asset_dir/files_menu.xml bin/files_menu
 exec cp [genode_dir]/repos/hermos/src/app/theme_engine/theme.hid bin/theme.hid
+exec cp [genode_dir]/repos/hermos/run/mykee.key bin/mykee.key
 
-set boot_modules [list {*}[build_artifacts] hermos_drivers.config hermos_terminal.config Roboto-Regular.ttf Inter-Regular.ttf Inter-Medium.ttf Inter-SemiBold.ttf compass.png hydro_thumb.png hydro_big.png icon_search.png icon_folder.png icon_mic.png icon_user.png icon_terminal.png icon_close.png icon_minimize.png icon_pause.png wallpaper.png logo.png icon_leaf.png registry files_menu menu_view_style.tar theme.hid hermos-system.img]
+set boot_modules [list {*}[build_artifacts] hermos_drivers.config hermos_terminal.config Roboto-Regular.ttf Inter-Regular.ttf Inter-Medium.ttf Inter-SemiBold.ttf compass.png hydro_thumb.png hydro_big.png icon_search.png icon_folder.png icon_mic.png icon_user.png icon_terminal.png icon_close.png icon_minimize.png icon_pause.png wallpaper.png logo.png icon_leaf.png registry files_menu menu_view_style.tar theme.hid mykee.key hermos-system.img]
 build_boot_image $boot_modules
 
 if {[cmd_arg --hermos-build-only no] eq "yes"} {
