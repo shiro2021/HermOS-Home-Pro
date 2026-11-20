@@ -38,6 +38,7 @@
 #include <hermos_ui/cell_session.h>
 
 #include "scene.h"
+#include "installer_disk.h"
 #include "font_renderer.h"
 #include "png_renderer.h"
 
@@ -322,32 +323,6 @@ namespace Hermos {
 		Id_space<Parent::Server> &server_id_space() override { return _server_ids; }
 	};
 
-	/* ---- ext2 on-disk format (little-endian helpers + constants) ---- */
-	namespace Ext2 {
-		static void put16(char *p, unsigned v) { p[0] = (char)v; p[1] = (char)(v >> 8); }
-		static void put32(char *p, uint32_t v) { p[0]=(char)v; p[1]=(char)(v>>8); p[2]=(char)(v>>16); p[3]=(char)(v>>24); }
-		static void put64(char *p, uint64_t v) { for (int i = 0; i < 8; ++i) p[i] = (char)(v >> (8*i)); }
-		static uint16_t get16(char const *p) { return (uint16_t)((uint8_t)p[0] | ((uint8_t)p[1] << 8)); }
-		static uint32_t get32(char const *p) { return (uint32_t)((uint8_t)p[0] | ((uint8_t)p[1] << 8) | ((uint8_t)p[2] << 16) | ((uint8_t)p[3] << 24)); }
-		static uint64_t get64(char const *p) { uint64_t v = 0; for (int i = 0; i < 8; ++i) v |= (uint64_t)(uint8_t)p[i] << (8*i); return v; }
-		static uint32_t crc32(uint8_t const *buf, size_t len)
-		{
-			uint32_t crc = 0xFFFFFFFFu;
-			for (size_t i = 0; i < len; ++i) {
-				crc ^= buf[i];
-				for (int j = 0; j < 8; ++j)
-					crc = (crc >> 1) ^ (0xEDB88320u & (uint32_t)(-(int32_t)(crc & 1)));
-			}
-			return ~crc;
-		}
-		enum : uint32_t {
-			BS = 1024, NB = 8192, INO = 1024, INO_SZ = 128,  /* 8 MiB image, 1 KiB blocks */
-			MAGIC = 0xEF53, ROOT_INO = 2,
-			S_IFDIR = 0x4000, S_IFREG = 0x8000, PERM755 = 0x1ED,
-			ITABLE = (INO * INO_SZ + BS - 1) / BS,           /* 128 inode-table blocks */
-			FIRST  = 1 + 1 + 1 + 1 + 1 + ITABLE               /* 133 = first data block */
-		};
-	}
 
 	struct Main
 	{
@@ -619,27 +594,13 @@ namespace Hermos {
 	unsigned _mykee_seq { 1 };
 	/* installer: block-I/O state for the ext2 format + file copy */
 	Block::Session::Info _blk_info { };
-	enum { INST_IDLE = 0, INST_FORMATTING = 1, INST_COPYING = 2, INST_VERIFYING = 3, INST_DONE = 4 };
+	enum { INST_IDLE = 0, INST_FORMATTING = 1, INST_COPYING = 2, INST_VERIFYING = 3, INST_DONE = 4, INST_FAILED = 5 };
 	int      _install_phase { INST_IDLE };
 	unsigned _install_pct { 0 };
 	Attached_rom_dataspace _system_img { _env, "hermos-system.img" };
 	/* Step 3: dynamic ext2 extraction state (geometry + staged writer buffers) */
-	uint32_t _e2_bs { 0 };
-	uint32_t _e2_root_blk { 0 };
-	uint32_t _e2_it0 { 0 };
-	uint32_t _e2_it_blks { 0 };
-	uint32_t _e2_next_ino { 3 };
-	uint32_t _e2_next_blk { 0 };
-	char    *_e2_itable { nullptr };
-	char    *_e2_rootdir { nullptr };
-	size_t   _e2_dir_used { 0 };
-	char    *_e2_bootdir { nullptr };
-	size_t   _e2_boot_used { 0 };
-	char    *_e2_grubdir { nullptr };
-	size_t   _e2_grub_used { 0 };
 	uint64_t _alloc_gb { 19 };   /* user-chosen HermOS data-partition size (GiB) */
 	uint64_t _max_gb   { 19 };   /* largest data partition that fits on the disk (GiB) */
-	uint64_t _data_off { 0 };   /* byte offset of the HermOS data partition */
 		bool _win_open[6] { true, true, true, true, true, true };
 		App_kind _app_kind[MAX_APPS] { };
 
@@ -2426,6 +2387,13 @@ namespace Hermos {
 			return;
 		}
 		if (_installer_step == 1) return;   /* installing: timer-driven */
+		if (_installer_step == 3) {
+			if (x >= _w/2 - 75 && x < _w/2 + 75 && y >= _iby() && y < _iby() + 36) {
+				_installer_mode = false; _installer_step = 0; _installer_confirm = false;
+				_install_phase = INST_IDLE; _job.destruct(); _dirty = true;
+			}
+			return;
+		}
 		if (_installer_step == 2) {
 			if (_ihit_next(x, y)) { _reboot(); return; }
 			if (_ihit_back(x, y)) { _installer_mode = false; _dirty = true;
@@ -2462,973 +2430,71 @@ namespace Hermos {
 		return ok;
 	}
 
-	/* format the HermOS data partition (of `sectors` 512-byte sectors) as ext2.
-	 * Computes block size, block groups, bitmaps, and inode tables dynamically so
-	 * it works for any size from MiB up to TiB. */
-	bool _ext2_format(uint64_t sectors)
+	/* ---- installer: the disk work lives in installer_disk.h (host-tested) ---- */
+
+	static bool _inst_write(void *ctx, uint64_t off, void const *buf, size_t len)
+	{ return ((Main *)ctx)->_blk_io(Block::Packet_descriptor::WRITE, off, (char *)buf, len); }
+	static bool _inst_read(void *ctx, uint64_t off, void *buf, size_t len)
+	{ return ((Main *)ctx)->_blk_io(Block::Packet_descriptor::READ, off, (char *)buf, len); }
+
+	Installer::Io                     _inst_io { this, _inst_write, _inst_read };
+	Constructible<Installer::Job>     _job { };
+	Genode::String<96>                _inst_error { };
+
+	/* seconds since 1970 from the RTC (days-from-civil), 0 if there is no clock */
+	uint32_t _unix_now()
 	{
-		using namespace Ext2;
-		uint64_t const bytes = sectors * 512;
-
-		uint32_t block_size; uint32_t log_bs;
-		if      (bytes < 512ull*1024*1024)          { block_size = 1024; log_bs = 0; }
-		else if (bytes < 4ull*1024*1024*1024)       { block_size = 2048; log_bs = 1; }
-		else                                        { block_size = 4096; log_bs = 2; }
-
-		uint64_t const total_blocks = bytes / block_size;
-		uint32_t const bpg      = 8 * block_size;                       /* blocks per group */
-		uint64_t const groups   = (total_blocks + bpg - 1) / bpg;       /* group count */
-		uint32_t const inode_sz = 256;
-		uint32_t const ipg      = bpg / 4;                              /* inodes per group */
-		uint32_t const ib_bmap  = (ipg + 8*block_size - 1) / (8*block_size);   /* inode-bitmap blocks */
-		uint32_t const it_blks  = (ipg * inode_sz + block_size - 1) / block_size; /* inode-table blocks */
-		uint32_t const gdt_blks = (uint32_t)((groups * 32 + block_size - 1) / block_size);
-
-		/* group-0 metadata layout (superblock at byte 1024; GDT at block 1 for >=2KiB, block 2 for 1KiB) */
-		uint32_t const gdt_blk = (block_size == 1024) ? 2 : 1;
-		uint32_t const bb0  = gdt_blk + gdt_blks;
-		uint32_t const ib0  = bb0 + 1;
-		uint32_t const it0  = ib0 + ib_bmap;
-		uint32_t const root_blk = it0 + it_blks;   /* first data block = root directory */
-
-		/* per-group metadata blocks (group 0 carries superblock + GDT + root too) */
-		uint32_t const meta = 1 + ib_bmap + it_blks;
-		uint64_t const used_blocks = (root_blk + 1) + (groups - 1) * meta;
-
-		/* ---- 1. superblock (block 1) ---- */
-		char *sb = (char *)_asset_heap.alloc(block_size);
-		if (!sb) return false;
-		memset(sb, 0, block_size);
-		put32(sb + 0,  (uint32_t)(groups * ipg));      /* s_inodes_count */
-		put32(sb + 4,  (uint32_t)total_blocks);        /* s_blocks_count */
-		put32(sb + 8,  (uint32_t)(total_blocks / 20)); /* s_r_blocks_count (5%) */
-		put32(sb + 12, (uint32_t)(total_blocks - used_blocks));          /* s_free_blocks_count */
-		put32(sb + 16, (uint32_t)(groups * ipg - 2));                    /* s_free_inodes_count */
-		put32(sb + 20, (block_size == 1024) ? 1 : 0);  /* s_first_data_block */
-		put32(sb + 24, log_bs);                        /* s_log_block_size */
-		put32(sb + 28, log_bs);                        /* s_log_frag_size */
-		put32(sb + 32, bpg);                           /* s_blocks_per_group */
-		put32(sb + 36, bpg);                           /* s_frags_per_group */
-		put32(sb + 40, ipg);                           /* s_inodes_per_group */
-		put16(sb + 54, 0xFFFF);                        /* s_max_mnt_count */
-		put16(sb + 56, Ext2::MAGIC);                   /* s_magic */
-		put16(sb + 58, 1);                             /* s_state = clean */
-		put16(sb + 60, 1);                             /* s_errors = continue */
-		put32(sb + 72, 0);                             /* s_creator_os = Linux */
-		put32(sb + 76, 1);                             /* s_rev_level = dynamic */
-		put32(sb + 84, 11);                            /* s_first_ino */
-		put16(sb + 88, inode_sz);                      /* s_inode_size */
-		put32(sb + 96, 0x2);                           /* s_feature_incompat = FILETYPE */
-		if (!_blk_io(Block::Packet_descriptor::WRITE, _data_off + 1024, sb, 1024)) { _asset_heap.free(sb, block_size); return false; }
-		_asset_heap.free(sb, block_size);
-
-		/* ---- 2. group descriptor table (block 2) ---- */
-		char *gdt = (char *)_asset_heap.alloc(gdt_blks * block_size);
-		if (!gdt) return false;
-		memset(gdt, 0, gdt_blks * block_size);
-		for (uint64_t g = 0; g < groups; ++g) {
-			uint64_t const gstart = g * bpg;
-			uint32_t const bb  = (g == 0) ? bb0 : (uint32_t)gstart;
-			uint32_t const ib  = bb + 1;
-			uint32_t const it  = ib + ib_bmap;
-			uint64_t const gblocks = (gstart + bpg < total_blocks) ? bpg : (total_blocks - gstart);
-			uint64_t const gused   = (g == 0) ? (root_blk + 1) : meta;
-			uint32_t const gfree   = (uint32_t)(gblocks - gused);
-			uint16_t const ifree   = (uint16_t)((g == 0) ? (ipg - 2) : ipg);
-			char *d = gdt + g * 32;
-			put32(d + 0, bb);  put32(d + 4, ib);  put32(d + 8, it);
-			put16(d + 12, gfree);  put16(d + 14, ifree);  put16(d + 16, (g == 0) ? 1 : 0);
-		}
-		if (!_blk_io(Block::Packet_descriptor::WRITE, _data_off + (uint64_t)gdt_blk * block_size, gdt, gdt_blks * block_size)) { _asset_heap.free(gdt, gdt_blks * block_size); return false; }
-		_asset_heap.free(gdt, gdt_blks * block_size);
-
-		/* ---- 3. per-group block bitmaps + inode bitmaps ---- */
-		char *bb = (char *)_asset_heap.alloc(block_size);
-		char *ib = (char *)_asset_heap.alloc(block_size);
-		if (!bb || !ib) { if (bb) _asset_heap.free(bb, block_size); if (ib) _asset_heap.free(ib, block_size); return false; }
-
-		for (uint64_t g = 0; g < groups; ++g) {
-			uint64_t const gstart = g * bpg;
-			uint32_t const bb_blk = (g == 0) ? bb0 : (uint32_t)gstart;
-			uint32_t const ib_blk = bb_blk + 1;
-
-			uint64_t const gblocks = (gstart + bpg < total_blocks) ? bpg : (total_blocks - gstart);
-			uint64_t const gused   = (g == 0) ? (root_blk + 1) : meta;
-
-			/* block bitmap: mark the metadata blocks as used */
-			memset(bb, 0, block_size);
-			for (uint64_t b = 0; b < gused && b < gblocks; ++b)
-				bb[b >> 3] |= (char)(1 << (b & 7));
-			if (!_blk_io(Block::Packet_descriptor::WRITE, _data_off + (uint64_t)bb_blk * block_size, bb, block_size)) { _asset_heap.free(bb, block_size); _asset_heap.free(ib, block_size); return false; }
-
-			/* inode bitmap: group 0 uses inodes 1 (bad) + 2 (root) */
-			memset(ib, 0, block_size);
-			if (g == 0) ib[0] = 0x06;
-			if (!_blk_io(Block::Packet_descriptor::WRITE, _data_off + (uint64_t)ib_blk * block_size, ib, block_size)) { _asset_heap.free(bb, block_size); _asset_heap.free(ib, block_size); return false; }
-		}
-		_asset_heap.free(bb, block_size);
-		_asset_heap.free(ib, block_size);
-
-		/* ---- 4. group-0 inode table: inode 2 = root directory ---- */
-		char *it = (char *)_asset_heap.alloc(it_blks * block_size);
-		if (!it) return false;
-		memset(it, 0, it_blks * block_size);
-		char *root = it + (Ext2::ROOT_INO - 1) * inode_sz;
-		put16(root + 0, Ext2::S_IFDIR | Ext2::PERM755);  put32(root + 4, block_size);
-		put16(root + 26, 2);                              put32(root + 28, 2);
-		put32(root + 40, root_blk);
-		bool ok = _blk_io(Block::Packet_descriptor::WRITE, _data_off + (uint64_t)it0 * block_size, it, it_blks * block_size);
-		_asset_heap.free(it, it_blks * block_size);
-		if (!ok) return false;
-
-		/* ---- 5. root directory ('.' + '..') at block root_blk ---- */
-		char *dir = (char *)_asset_heap.alloc(block_size);
-		if (!dir) return false;
-		memset(dir, 0, block_size);
-		put32(dir + 0,  Ext2::ROOT_INO);  put16(dir + 4, 12);  dir[6] = 1;  dir[7] = 2;  dir[8] = '.';
-		put32(dir + 12, Ext2::ROOT_INO);  put16(dir + 16, (unsigned)block_size - 12);
-		dir[18] = 2;  dir[19] = 2;  dir[20] = '.';  dir[21] = '.';
-		ok = _blk_io(Block::Packet_descriptor::WRITE, _data_off + (uint64_t)root_blk * block_size, dir, block_size);
-		_asset_heap.free(dir, block_size);
-		if (!ok) return false;
-
-		log("HermOS installer: ext2 formatted (", (unsigned)total_blocks, " blocks, ",
-		    (unsigned)groups, " groups, ", (unsigned)block_size, "-byte blocks)");
-		return true;
-	}
-
-	/* ---- Step 3: raw file extraction ---- */
-
-	/* read `len` bytes from the source image ROM at `off` */
-	bool _src_read(void *dst, uint64_t off, size_t len)
-	{
-		if (off + len > _system_img.size()) return false;
-		Genode::memcpy(dst, _system_img.local_addr<char>() + off, len);
-		return true;
-	}
-
-	/* locate the source image's ext2 partition (its GPT 0x8300 entry) */
-	bool _src_ext2_offset(uint64_t &ext2_off)
-	{
-		using namespace Ext2;
-		char hdr[512];
-		if (!_src_read(hdr, 512, 512)) return false;
-		char const sig[8] = { 'E','F','I',' ','P','A','R','T' };
-		for (int i = 0; i < 8; ++i) if (hdr[i] != sig[i]) return false;
-		uint64_t const entries_lba = get64(hdr + 72);
-		char entries[128 * 128];
-		if (!_src_read(entries, entries_lba * 512, 128 * 128)) return false;
-		uint8_t const data_type[16] = { 0xaf,0x3d,0xc6,0x0f, 0x83,0x84, 0x72,0x47,
-		                                0x8e,0x79, 0x3d,0x69, 0xd8,0x47, 0x7d,0xe4 };
-		for (int e = 0; e < 128; ++e) {
-			char const *en = entries + e * 128;
-			bool match = true;
-			for (int i = 0; i < 16 && match; ++i) match = ((uint8_t)en[i] == data_type[i]);
-			if (match) { ext2_off = get64(en + 32) * 512; return true; }
-		}
-		return false;
-	}
-
-	/* read an ext2 block from the source image */
-	bool _e2_read_src_block(uint64_t ext2_off, uint32_t bs, uint32_t blk, char *out)
-	{
-		return _src_read(out, ext2_off + (uint64_t)blk * bs, bs);
-	}
-
-	/* find `name` in directory `dir_ino`, returning its inode */
-	bool _e2_find_in_dir(uint64_t ext2_off, uint32_t bs, uint32_t itable_blk, uint32_t ino_sz,
-	                     uint32_t dir_ino, char const *name, size_t name_len, uint32_t *out_ino)
-	{
-		using namespace Ext2;
-		char ino[256];
-		if (!_src_read(ino, ext2_off + (uint64_t)itable_blk * bs + (uint64_t)(dir_ino - 1) * ino_sz, ino_sz)) return false;
-		uint32_t const dir_blk = get32(ino + 40);
-		char *dir = (char *)_asset_heap.alloc(bs);
-		if (!dir) return false;
-		bool found = false;
-		if (_e2_read_src_block(ext2_off, bs, dir_blk, dir)) {
-			uint32_t off = 0;
-			while (off + 8 <= bs) {
-				uint32_t const i = get32(dir + off);
-				uint16_t const rl = get16(dir + off + 4);
-				uint8_t  const nl = (uint8_t)dir[off + 6];
-				if (rl == 0 || off + rl > bs) break;
-				bool nm = (nl == name_len);
-				for (int k = 0; k < (int)nl && nm; ++k) nm = (dir[off + 8 + k] == name[k]);
-				if (nm && i) { *out_ino = i; found = true; break; }
-				off += rl;
-			}
-		}
-		_asset_heap.free(dir, bs);
-		return found;
-	}
-
-	/* read a file (a '/' path within the source image's ext2) into a fresh heap buffer */
-	bool _e2_read_path(char const *path, void **data, size_t *size)
-	{
-		using namespace Ext2;
-		uint64_t ext2_off;
-		if (!_src_ext2_offset(ext2_off)) { log("HermOS installer: read_path: no ext2 partition"); return false; }
-
-		char sb[1024];
-		if (!_src_read(sb, ext2_off + 1024, 1024)) { log("HermOS installer: read_path: superblock read failed"); return false; }
-		if (get16(sb + 56) != MAGIC) { log("HermOS installer: read_path: bad magic ", (unsigned)get16(sb + 56)); return false; }
-		uint32_t const bs = 1024u << get32(sb + 24);
-		uint32_t const ino_sz = get16(sb + 88);
-
-		uint32_t const gdt_blk = (bs == 1024) ? 2 : 1;
-		char gd[32];
-		if (!_src_read(gd, ext2_off + (uint64_t)gdt_blk * bs, 32)) { log("HermOS installer: read_path: gd read failed"); return false; }
-		uint32_t const itable_blk = get32(gd + 8);
-		log("HermOS installer: read_path ", path, " off=", (unsigned)ext2_off, " bs=", bs, " ino_sz=", ino_sz, " itable=", itable_blk);
-
-		uint32_t ino = ROOT_INO;
-		char const *p = path;
-		while (*p) {
-			char const *slash = p;
-			while (*slash && *slash != '/') ++slash;
-			size_t const clen = (size_t)(slash - p);
-			uint32_t next = 0;
-			if (!_e2_find_in_dir(ext2_off, bs, itable_blk, ino_sz, ino, p, clen, &next)) {
-				log("HermOS installer: read_path: component not found in ino ", ino);
-				return false;
-			}
-			ino = next;
-			p = (*slash == '/') ? slash + 1 : slash;
-		}
-
-		char fi[256];
-		if (!_src_read(fi, ext2_off + (uint64_t)itable_blk * bs + (uint64_t)(ino - 1) * ino_sz, ino_sz)) return false;
-		uint32_t const fsize = get32(fi + 4);
-		char *out = (char *)_asset_heap.alloc(fsize ? fsize : 1);
-		if (!out) return false;
-
-		/* copy one source block into `out`, advancing `copied` */
-		auto copy_blk = [&](uint32_t blk, uint32_t *copied) -> bool {
-			if (*copied >= fsize) return true;
-			char *buf = (char *)_asset_heap.alloc(bs);
-			if (!buf) return false;
-			bool const ok = _e2_read_src_block(ext2_off, bs, blk, buf);
-			if (ok) {
-				uint32_t const n = (fsize - *copied < bs) ? (fsize - *copied) : bs;
-				Genode::memcpy(out + *copied, buf, n);
-				*copied += n;
-			}
-			_asset_heap.free(buf, bs);
-			return ok;
-		};
-
-		uint32_t copied = 0;
-		/* direct blocks */
-		for (int b = 0; b < 12 && copied < fsize; ++b) {
-			uint32_t const blk = get32(fi + 40 + 4*b);
-			if (!blk) break;
-			if (!copy_blk(blk, &copied)) { _asset_heap.free(out, fsize ? fsize : 1); return false; }
-		}
-		/* single indirect */
-		uint32_t const sin = get32(fi + 40 + 48);
-		if (sin && copied < fsize) {
-			char *sd = (char *)_asset_heap.alloc(bs);
-			if (!sd) { _asset_heap.free(out, fsize ? fsize : 1); return false; }
-			bool ok = _e2_read_src_block(ext2_off, bs, sin, sd);
-			if (ok) {
-				for (uint32_t i = 0; i < bs / 4 && copied < fsize; ++i) {
-					uint32_t const blk = get32(sd + 4*i);
-					if (!blk) break;
-					if (!copy_blk(blk, &copied)) { ok = false; break; }
-				}
-			}
-			_asset_heap.free(sd, bs);
-			if (!ok) { _asset_heap.free(out, fsize ? fsize : 1); return false; }
-		}
-		/* double indirect */
-		uint32_t const din = get32(fi + 40 + 52);
-		if (din && copied < fsize) {
-			char *dd = (char *)_asset_heap.alloc(bs);
-			if (!dd) { _asset_heap.free(out, fsize ? fsize : 1); return false; }
-			bool ok = _e2_read_src_block(ext2_off, bs, din, dd);
-			if (ok) {
-				for (uint32_t j = 0; j < bs / 4 && copied < fsize && ok; ++j) {
-					uint32_t const sb = get32(dd + 4*j);
-					if (!sb) break;
-					char *sd = (char *)_asset_heap.alloc(bs);
-					if (!sd) { ok = false; break; }
-					bool ok2 = _e2_read_src_block(ext2_off, bs, sb, sd);
-					if (ok2) {
-						for (uint32_t i = 0; i < bs / 4 && copied < fsize; ++i) {
-							uint32_t const blk = get32(sd + 4*i);
-							if (!blk) break;
-							if (!copy_blk(blk, &copied)) { ok2 = false; break; }
-						}
-					}
-					_asset_heap.free(sd, bs);
-					if (!ok2) ok = false;
-				}
-			}
-			_asset_heap.free(dd, bs);
-			if (!ok) { _asset_heap.free(out, fsize ? fsize : 1); return false; }
-		}
-		*data = out;
-		*size = fsize;
-		return true;
-	}
-
-	/* append a directory entry to an in-memory directory */
-	void _e2_add_dir_entry(char *dir, size_t *used, uint32_t ino, uint8_t ftype, char const *name)
-	{
-		using namespace Ext2;
-		size_t const name_len = Genode::strlen(name);
-		size_t const entry_len = (8 + name_len + 3) & ~(size_t)3;
-		put32(dir + *used, ino);
-		put16(dir + *used + 4, (unsigned)entry_len);
-		dir[*used + 6] = (char)name_len;
-		dir[*used + 7] = (char)ftype;
-		Genode::memcpy(dir + *used + 8, name, name_len);
-		*used += entry_len;
-	}
-
-	/* extend a directory's last entry rec_len to the end of the block */
-	void _e2_finalize_dir(char *dir, size_t used)
-	{
-		using namespace Ext2;
-		size_t off = 0, last = 0;
-		while (off < used) {
-			last = off;
-			size_t const nl = (uint8_t)dir[off + 6];
-			off += (8 + nl + 3) & ~(size_t)3;
-		}
-		put16(dir + last + 4, (unsigned)(_e2_bs - last));
-	}
-
-	/* create a sub-directory (inode + dir block + parent entry) */
-	bool _e2_mkdir(uint32_t child_ino, uint32_t child_blk, uint32_t parent_ino,
-	               char *parent, size_t *parent_used, char **child_out, size_t *child_used_out,
-	               char const *name)
-	{
-		using namespace Ext2;
-		uint32_t const bs = _e2_bs;
-		char *cino = _e2_itable + (child_ino - 1) * 256;
-		put16(cino + 0, S_IFDIR | PERM755);  put32(cino + 4, bs);
-		put16(cino + 26, 2);                 put32(cino + 28, 2);
-		put32(cino + 40, child_blk);
-
-		char *child = (char *)_asset_heap.alloc(bs);
-		if (!child) return false;
-		memset(child, 0, bs);
-		put32(child + 0,  child_ino);  put16(child + 4, 12);  child[6] = 1;  child[7] = 2;  child[8] = '.';
-		put32(child + 12, parent_ino); put16(child + 16, 12); child[18] = 2; child[19] = 2; child[20] = '.'; child[21] = '.';
-		*child_out = child;
-		*child_used_out = 24;
-
-		_e2_add_dir_entry(parent, parent_used, child_ino, 2, name);
-		return true;
-	}
-
-	/* compute the target ext2 geometry + stage the root + boot + grub directories */
-	bool _e2_prepare(uint64_t sectors)
-	{
-		using namespace Ext2;
-		uint64_t const bytes = sectors * 512;
-		if      (bytes < 512ull*1024*1024)    _e2_bs = 1024;
-		else if (bytes < 4ull*1024*1024*1024) _e2_bs = 2048;
-		else                                  _e2_bs = 4096;
-		uint32_t const bs = _e2_bs;
-		uint32_t const bpg = 8 * bs;
-		uint64_t const groups = (bytes / bs + bpg - 1) / bpg;
-		uint32_t const ipg = bpg / 4;
-		uint32_t const ib_bmap = (ipg + 8*bs - 1) / (8*bs);
-		_e2_it_blks = (ipg * 256 + bs - 1) / bs;
-		uint32_t const gdt_blks = (uint32_t)((groups * 32 + bs - 1) / bs);
-		uint32_t const gdt_blk = (bs == 1024) ? 2 : 1;
-		_e2_it0 = gdt_blk + gdt_blks + 1 + ib_bmap;
-		_e2_root_blk = _e2_it0 + _e2_it_blks;
-
-		_e2_itable = (char *)_asset_heap.alloc(_e2_it_blks * bs);
-		if (!_e2_itable) return false;
-		memset(_e2_itable, 0, _e2_it_blks * bs);
-
-		/* root directory (inode 2, block _e2_root_blk) */
-		char *root = _e2_itable + (ROOT_INO - 1) * 256;
-		put16(root + 0, S_IFDIR | PERM755);  put32(root + 4, bs);
-		put16(root + 26, 2);                 put32(root + 28, 2);
-		put32(root + 40, _e2_root_blk);
-		_e2_rootdir = (char *)_asset_heap.alloc(bs);
-		if (!_e2_rootdir) return false;
-		memset(_e2_rootdir, 0, bs);
-		put32(_e2_rootdir + 0,  ROOT_INO);  put16(_e2_rootdir + 4, 12);
-		_e2_rootdir[6] = 1;  _e2_rootdir[7] = 2;  _e2_rootdir[8] = '.';
-		put32(_e2_rootdir + 12, ROOT_INO);  put16(_e2_rootdir + 16, 12);
-		_e2_rootdir[18] = 2;  _e2_rootdir[19] = 2;  _e2_rootdir[20] = '.';  _e2_rootdir[21] = '.';
-		_e2_dir_used = 24;
-
-		/* boot directory (inode 3, block _e2_root_blk + 1) */
-		if (!_e2_mkdir(3, _e2_root_blk + 1, ROOT_INO, _e2_rootdir, &_e2_dir_used,
-		               &_e2_bootdir, &_e2_boot_used, "boot")) return false;
-
-		/* grub directory (inode 4, block _e2_root_blk + 2) inside boot */
-		if (!_e2_mkdir(4, _e2_root_blk + 2, 3, _e2_bootdir, &_e2_boot_used,
-		               &_e2_grubdir, &_e2_grub_used, "grub")) return false;
-
-		_e2_next_ino = 5;
-		_e2_next_blk = _e2_root_blk + 3;
-		return true;
-	}
-
-	/* write a file into a target ext2 directory (sequential inode + block allocation) */
-	bool _e2_write_file_into(char *dir, size_t *dir_used, char const *name, void const *data, size_t size)
-	{
-		using namespace Ext2;
-		uint32_t const bs = _e2_bs;
-		uint32_t const nblk = (uint32_t)((size + bs - 1) / bs);
-		uint32_t const base = _e2_next_blk;
-
-		/* metadata block layout for the inode's i_block[] (direct + single + double indirect) */
-		uint32_t const n_direct = (nblk < 12) ? nblk : 12;
-		uint32_t const n_single = (nblk > 12) ? ((nblk - 12 < 1024) ? (nblk - 12) : 1024) : 0;
-		uint32_t const n_double = (nblk > 12 + 1024) ? (nblk - 12 - 1024) : 0;
-		uint32_t const n_dblk_single = (n_double + 1023) / 1024;
-		uint32_t const single_blk = (n_single) ? (base + nblk) : 0;
-		uint32_t const double_blk = (n_double) ? (base + nblk + 1) : 0;
-		uint32_t const meta = (n_single ? 1 : 0) + (n_double ? 1 + n_dblk_single : 0);
-
-		/* data blocks (256 KiB batches) */
-		size_t const total = (size_t)nblk * bs;
-		size_t off = 0;
-		while (off < total) {
-			size_t const n = (total - off < 256*1024) ? (total - off) : 256*1024;
-			char *blk = (char *)_asset_heap.alloc(n);
-			if (!blk) return false;
-			memset(blk, 0, n);
-			size_t const copy = (size - off < n) ? (size - off) : n;
-			if (copy) Genode::memcpy(blk, (char const *)data + off, copy);
-			bool const ok = _blk_io(Block::Packet_descriptor::WRITE, _data_off + (uint64_t)base * bs + off, blk, n);
-			_asset_heap.free(blk, n);
-			if (!ok) return false;
-			off += n;
-		}
-
-		/* single-indirect block */
-		if (n_single) {
-			char *s = (char *)_asset_heap.alloc(bs);
-			if (!s) return false;
-			memset(s, 0, bs);
-			for (uint32_t i = 0; i < n_single; ++i)
-				put32(s + 4*i, base + 12 + i);
-			bool const ok = _blk_io(Block::Packet_descriptor::WRITE, _data_off + (uint64_t)single_blk * bs, s, bs);
-			_asset_heap.free(s, bs);
-			if (!ok) return false;
-		}
-
-		/* double-indirect block + its single-indirect blocks */
-		if (n_double) {
-			char *d = (char *)_asset_heap.alloc(bs);
-			if (!d) return false;
-			memset(d, 0, bs);
-			for (uint32_t j = 0; j < n_dblk_single; ++j) {
-				uint32_t const sblk = double_blk + 1 + j;
-				put32(d + 4*j, sblk);
-				char *s = (char *)_asset_heap.alloc(bs);
-				if (!s) { _asset_heap.free(d, bs); return false; }
-				memset(s, 0, bs);
-				uint32_t const in_this = (n_double - j*1024 < 1024) ? (n_double - j*1024) : 1024;
-				for (uint32_t i = 0; i < in_this; ++i)
-					put32(s + 4*i, base + 12 + 1024 + j*1024 + i);
-				bool ok = _blk_io(Block::Packet_descriptor::WRITE, _data_off + (uint64_t)sblk * bs, s, bs);
-				_asset_heap.free(s, bs);
-				if (!ok) { _asset_heap.free(d, bs); return false; }
-			}
-			bool const ok = _blk_io(Block::Packet_descriptor::WRITE, _data_off + (uint64_t)double_blk * bs, d, bs);
-			_asset_heap.free(d, bs);
-			if (!ok) return false;
-		}
-
-		char *ino = _e2_itable + (_e2_next_ino - 1) * 256;
-		put16(ino + 0, S_IFREG | PERM755);
-		put32(ino + 4, (uint32_t)size);
-		put16(ino + 26, 1);
-		put32(ino + 28, (nblk + meta) * (bs / 512));
-		for (uint32_t i = 0; i < n_direct; ++i)
-			put32(ino + 40 + 4*i, base + i);
-		if (n_single) put32(ino + 40 + 4*12, single_blk);
-		if (n_double) put32(ino + 40 + 4*13, double_blk);
-
-		_e2_add_dir_entry(dir, dir_used, _e2_next_ino, 1, name);
-
-		_e2_next_ino += 1;
-		_e2_next_blk += nblk + meta;
-		return true;
-	}
-
-	/* flush the staged inode table + root/boot/grub directories to the target */
-	bool _e2_flush()
-	{
-		using namespace Ext2;
-		_e2_finalize_dir(_e2_rootdir, _e2_dir_used);
-		_e2_finalize_dir(_e2_bootdir, _e2_boot_used);
-		_e2_finalize_dir(_e2_grubdir, _e2_grub_used);
-
-		bool ok = _blk_io(Block::Packet_descriptor::WRITE, _data_off + (uint64_t)_e2_it0 * _e2_bs, _e2_itable, _e2_it_blks * _e2_bs);
-		if (ok) ok = _blk_io(Block::Packet_descriptor::WRITE, _data_off + (uint64_t)_e2_root_blk * _e2_bs, _e2_rootdir, _e2_bs);
-		if (ok) ok = _blk_io(Block::Packet_descriptor::WRITE, _data_off + (uint64_t)(_e2_root_blk + 1) * _e2_bs, _e2_bootdir, _e2_bs);
-		if (ok) ok = _blk_io(Block::Packet_descriptor::WRITE, _data_off + (uint64_t)(_e2_root_blk + 2) * _e2_bs, _e2_grubdir, _e2_bs);
-		return ok;
-	}
-
-	/* extract the boot files + write them into /boot and /boot/grub */
-	bool _extract_boot_files()
-	{
-		using namespace Ext2;
-		char const *paths[6] = { "boot/image.elf.gz", "boot/bender", "boot/hypervisor",
-		                         "boot/font.pf2", "boot/boot.png", "boot/grub/grub.cfg" };
-		char const *names[6] = { "image.elf.gz", "bender", "hypervisor", "font.pf2", "boot.png", "grub.cfg" };
-		char   *dirs[6]   = { _e2_bootdir, _e2_bootdir, _e2_bootdir, _e2_bootdir, _e2_bootdir, _e2_grubdir };
-		size_t *useds[6]  = { &_e2_boot_used, &_e2_boot_used, &_e2_boot_used, &_e2_boot_used, &_e2_boot_used, &_e2_grub_used };
-		for (int i = 0; i < 6; ++i) {
-			void *data = nullptr; size_t size = 0;
-			if (!_e2_read_path(paths[i], &data, &size)) {
-				log("HermOS installer: EXTRACT FAILED ", paths[i]); return false;
-			}
-			bool const ok = _e2_write_file_into(dirs[i], useds[i], names[i], data, size);
-			_asset_heap.free(data, size ? size : 1);
-			if (!ok) return false;
-			log("HermOS installer: extracted ", names[i], " (", (unsigned)size, " bytes)");
-		}
-		return _e2_flush();
-	}
-
-	/* ---- Step 4.2: EFI partition (FAT32) ---- */
-
-	/* locate the source image's EFI system partition (its GPT EF00 entry) */
-	bool _src_efi_offset(uint64_t &efi_off)
-	{
-		using namespace Ext2;
-		char hdr[512];
-		if (!_src_read(hdr, 512, 512)) return false;
-		char const sig[8] = { 'E','F','I',' ','P','A','R','T' };
-		for (int i = 0; i < 8; ++i) if (hdr[i] != sig[i]) return false;
-		uint64_t const entries_lba = get64(hdr + 72);
-		char entries[128 * 128];
-		if (!_src_read(entries, entries_lba * 512, 128 * 128)) return false;
-		uint8_t const efi_type[16] = { 0x28,0x73,0x2a,0xc1, 0x1f,0xf8, 0xd2,0x11,
-		                               0xba,0x4b, 0x00,0xa0, 0xc9,0x3e, 0xc9,0x3b };
-		for (int e = 0; e < 128; ++e) {
-			char const *en = entries + e * 128;
-			bool match = true;
-			for (int i = 0; i < 16 && match; ++i) match = ((uint8_t)en[i] == efi_type[i]);
-			if (match) { efi_off = get64(en + 32) * 512; return true; }
-		}
-		return false;
-	}
-
-	/* extract \EFI\boot\bootx64.efi from the source image's FAT12/16 EFI partition */
-	bool _read_bootx64(void **data, size_t *size)
-	{
-		using namespace Ext2;
-		uint64_t efi_off;
-		if (!_src_efi_offset(efi_off)) { log("HermOS installer: bootx64: no EFI partition"); return false; }
-
-		char bpb[512];
-		if (!_src_read(bpb, efi_off, 512)) return false;
-		uint32_t const bps     = get16(bpb + 11);
-		uint32_t const spc     = (uint8_t)bpb[13];
-		uint32_t const reserved = get16(bpb + 14);
-		uint32_t const nfats   = (uint8_t)bpb[16];
-		uint32_t const root_entries = get16(bpb + 17);
-		uint32_t const spf     = get16(bpb + 22);
-		uint32_t const root_bytes = root_entries * 32;
-		uint32_t const data_start = reserved + nfats * spf + (root_bytes + bps - 1) / bps;
-
-		auto cluster_off = [&](uint32_t cl) { return efi_off + (uint64_t)(data_start + (cl - 2) * spc) * bps; };
-		auto fat_next = [&](uint32_t cl) -> uint32_t {
-			uint32_t const byte_off = cl * 3 / 2;
-			char e[2];
-			if (!_src_read(e, efi_off + (uint64_t)reserved * bps + byte_off, 2)) return 0xFFF;
-			uint16_t const v = get16(e);
-			uint32_t const next = (cl & 1) ? (v >> 4) : (v & 0xFFF);
-			return (next >= 0xFF8) ? 0xFFF : next;
-		};
-		auto find_at = [&](uint64_t dir_off, char const name[11], uint32_t *out_cl, uint32_t *out_size) -> bool {
-			char *dir = (char *)_asset_heap.alloc((size_t)bps * spc);
-			if (!dir) return false;
-			bool found = false;
-			if (_src_read(dir, dir_off, (size_t)bps * spc)) {
-				for (uint32_t off = 0; off + 32 <= (uint32_t)bps * spc; off += 32) {
-					if (dir[off] == 0x00) break;
-					if ((uint8_t)dir[off] == 0xE5) continue;
-					bool nm = true;
-					for (int k = 0; k < 11 && nm; ++k) {
-						char a = dir[off + k], b = name[k];
-						if (a >= 'a' && a <= 'z') a -= 32;
-						if (b >= 'a' && b <= 'z') b -= 32;
-						nm = (a == b);
-					}
-					if (nm) {
-						uint32_t const hi = get16(dir + off + 20);
-						uint32_t const lo = get16(dir + off + 26);
-						*out_cl = (hi << 16) | lo;
-						*out_size = get32(dir + off + 28);
-						found = true;
-						break;
-					}
-				}
-			}
-			_asset_heap.free(dir, (size_t)bps * spc);
-			return found;
-		};
-
-		char const n_efi[11]  = { 'E','F','I',' ',' ',' ',' ',' ',' ',' ',' ' };
-		char const n_boot[11] = { 'B','O','O','T',' ',' ',' ',' ',' ',' ',' ' };
-		char const n_file[11] = { 'B','O','O','T','X','6','4',' ','E','F','I' };
-
-		uint32_t cl, fsize;
-		if (!find_at(efi_off + (uint64_t)(reserved + nfats * spf) * bps, n_efi, &cl, &fsize)) { log("HermOS installer: bootx64: EFI not found"); return false; }
-		if (!find_at(cluster_off(cl), n_boot, &cl, &fsize)) { log("HermOS installer: bootx64: BOOT not found"); return false; }
-		if (!find_at(cluster_off(cl), n_file, &cl, &fsize)) { log("HermOS installer: bootx64: BOOTX64.EFI not found"); return false; }
-
-		char *out = (char *)_asset_heap.alloc(fsize ? fsize : 1);
-		if (!out) return false;
-		uint32_t copied = 0;
-		uint32_t cur = cl;
-		for (int depth = 0; depth < 4096 && copied < fsize && cur >= 2 && cur < 0xFF0; ++depth) {
-			char *buf = (char *)_asset_heap.alloc((size_t)bps * spc);
-			if (!buf) { _asset_heap.free(out, fsize ? fsize : 1); return false; }
-			bool const ok = _src_read(buf, cluster_off(cur), (size_t)bps * spc);
-			if (ok) {
-				uint32_t const n = (fsize - copied < (uint32_t)bps * spc) ? (fsize - copied) : (uint32_t)bps * spc;
-				Genode::memcpy(out + copied, buf, n);
-				copied += n;
-			}
-			_asset_heap.free(buf, (size_t)bps * spc);
-			if (!ok) { _asset_heap.free(out, fsize ? fsize : 1); return false; }
-			cur = fat_next(cur);
-		}
-		*data = out;
-		*size = fsize;
-		return true;
-	}
-
-	/* fill a 32-byte FAT32 directory entry */
-	void _fat32_dirent(char *d, char const name[11], uint8_t attr, uint32_t cluster, uint32_t size)
-	{
-		using namespace Ext2;
-		memset(d, 0, 32);
-		Genode::memcpy(d, name, 11);
-		d[11] = (char)attr;
-		put16(d + 20, (unsigned)(cluster >> 16));
-		put16(d + 26, (unsigned)(cluster & 0xFFFF));
-		put32(d + 28, size);
-	}
-
-	/* format the EFI partition as FAT32 + place bootx64.efi into \EFI\boot\ */
-	bool _fat32_format(uint64_t efi_sector, uint64_t efi_sectors, void const *bootx64, size_t bootx64_size)
-	{
-		using namespace Ext2;
-		uint32_t const bps = 512;
-		uint32_t const spc = 1;
-		uint32_t const reserved = 32;
-		uint32_t const nfats = 2;
-
-		uint32_t spf = 1;
-		for (;;) {
-			uint32_t const clusters = (uint32_t)((efi_sectors - reserved - 2*spf) / spc);
-			uint32_t const new_spf = (clusters * 4 + bps - 1) / bps;
-			if (new_spf == spf) break;
-			spf = new_spf;
-		}
-		uint32_t const data_start = reserved + nfats * spf;
-		uint32_t const file_clusters = (uint32_t)((bootx64_size + bps*spc - 1) / (bps*spc));
-
-		/* cluster layout: 2=root 3=EFI 4=BOOT 5..=bootx64, then \boot\ (dir), \boot\grub\ (dir), grub.cfg */
-		uint32_t const boot_dir_cl = 5 + file_clusters;
-		uint32_t const grub_dir_cl = boot_dir_cl + 1;
-		uint32_t const cfg_cl      = grub_dir_cl + 1;
-		char const grub_cfg[] = "set root=(hd0,gpt2)\nconfigfile /boot/grub/grub.cfg\n";
-		uint32_t const grub_cfg_size = (uint32_t)(sizeof(grub_cfg) - 1);
-
-		auto write_at = [&](uint32_t rel_sector, void const *buf, size_t len) -> bool {
-			return _blk_io(Block::Packet_descriptor::WRITE, (uint64_t)(efi_sector + rel_sector) * bps, (char *)buf, len);
-		};
-
-		/* boot sector (BPB) */
-		char bpb[512];
-		memset(bpb, 0, 512);
-		bpb[0] = 0xEB; bpb[1] = 0x3C; bpb[2] = 0x90;
-		Genode::memcpy(bpb + 3, "MSDOS5.0", 8);
-		put16(bpb + 11, bps);
-		bpb[13] = (char)spc;
-		put16(bpb + 14, reserved);
-		bpb[16] = (char)nfats;
-		bpb[21] = 0xF8;
-		put16(bpb + 24, 63);
-		put16(bpb + 26, 255);
-		put32(bpb + 28, (uint32_t)efi_sector);
-		put32(bpb + 32, (uint32_t)efi_sectors);
-		put32(bpb + 36, spf);
-		put32(bpb + 44, 2);          /* root cluster */
-		put16(bpb + 48, 1);          /* FSInfo sector */
-		put16(bpb + 50, 6);          /* backup boot sector */
-		bpb[64] = 0x80;
-		bpb[66] = 0x29;
-		put32(bpb + 67, 0x12345678);
-		Genode::memcpy(bpb + 71, "NO NAME    ", 11);
-		Genode::memcpy(bpb + 82, "FAT32   ", 8);
-		bpb[510] = 0x55; bpb[511] = 0xAA;
-		if (!write_at(0, bpb, 512)) return false;
-
-		/* FSInfo (sector 1) */
-		char fsi[512];
-		memset(fsi, 0, 512);
-		put32(fsi + 0,   0x41615252);
-		put32(fsi + 484, 0x61417272);
-		put32(fsi + 488, 0xFFFFFFFF);
-		put32(fsi + 492, 0xFFFFFFFF);
-		put32(fsi + 508, 0xAA550000);
-		if (!write_at(1, fsi, 512)) return false;
-
-		/* FAT (2 copies): root/Efi/Boot dirs EOC, then the file chain */
-		char *fat = (char *)_asset_heap.alloc(spf * bps);
-		if (!fat) return false;
-		memset(fat, 0, spf * bps);
-		put32(fat + 0, 0x0FFFFFF8);
-		put32(fat + 4, 0x0FFFFFFF);
-		put32(fat + 8, 0x0FFFFFFF);
-		put32(fat + 12, 0x0FFFFFFF);
-		put32(fat + 16, 0x0FFFFFFF);
-		for (uint32_t i = 0; i < file_clusters; ++i)
-			put32(fat + (5 + i) * 4, (i == file_clusters - 1) ? 0x0FFFFFFF : (6 + i));
-		put32(fat + boot_dir_cl * 4, 0x0FFFFFFF);   /* \boot\ dir */
-		put32(fat + grub_dir_cl * 4, 0x0FFFFFFF);   /* \boot\grub\ dir */
-		put32(fat + cfg_cl      * 4, 0x0FFFFFFF);   /* grub.cfg file (1 cluster) */
-		bool ok = write_at(reserved, fat, spf * bps);
-		if (ok) ok = write_at(reserved + spf, fat, spf * bps);
-		_asset_heap.free(fat, spf * bps);
-		if (!ok) return false;
-
-		/* directories: root -> EFI(3) + boot, EFI -> BOOT(4) -> BOOTX64.EFI(5) */
-		char const n_efi[11]  = { 'E','F','I',' ',' ',' ',' ',' ',' ',' ',' ' };
-		char const n_boot[11] = { 'B','O','O','T',' ',' ',' ',' ',' ',' ',' ' };
-		char const n_file[11] = { 'B','O','O','T','X','6','4',' ','E','F','I' };
-		char const n_grub[11] = { 'G','R','U','B',' ',' ',' ',' ',' ',' ',' ' };
-		char const n_cfg[11]  = { 'G','R','U','B',' ',' ',' ',' ','C','F','G' };
-
-		char *root = (char *)_asset_heap.alloc(bps * spc);
-		char *efi  = (char *)_asset_heap.alloc(bps * spc);
-		char *boot = (char *)_asset_heap.alloc(bps * spc);
-		char *bootdir = (char *)_asset_heap.alloc(bps * spc);
-		char *grubdir = (char *)_asset_heap.alloc(bps * spc);
-		if (!root || !efi || !boot || !bootdir || !grubdir) {
-			if (root) _asset_heap.free(root, bps*spc); if (efi) _asset_heap.free(efi, bps*spc);
-			if (boot) _asset_heap.free(boot, bps*spc);
-			if (bootdir) _asset_heap.free(bootdir, bps*spc);
-			if (grubdir) _asset_heap.free(grubdir, bps*spc);
-			return false;
-		}
-		memset(root, 0, bps * spc);
-		memset(efi, 0, bps * spc);
-		memset(boot, 0, bps * spc);
-		memset(bootdir, 0, bps * spc);
-		memset(grubdir, 0, bps * spc);
-		_fat32_dirent(root,      n_efi,  0x10, 3, 0);
-		_fat32_dirent(root + 32, n_boot, 0x10, boot_dir_cl, 0);
-		_fat32_dirent(efi,       n_boot, 0x10, 4, 0);
-		_fat32_dirent(boot,      n_file, 0x20, 5, (uint32_t)bootx64_size);
-		_fat32_dirent(bootdir,   n_grub, 0x10, grub_dir_cl, 0);
-		_fat32_dirent(grubdir,   n_cfg,  0x20, cfg_cl, grub_cfg_size);
-		ok = write_at(data_start + 0 * spc, root, bps * spc);      /* cluster 2 */
-		if (ok) ok = write_at(data_start + 1 * spc, efi, bps * spc);  /* cluster 3 */
-		if (ok) ok = write_at(data_start + 2 * spc, boot, bps * spc); /* cluster 4 */
-		if (ok) ok = write_at(data_start + (boot_dir_cl - 2) * spc, bootdir, bps * spc); /* \boot\ */
-		if (ok) ok = write_at(data_start + (grub_dir_cl - 2) * spc, grubdir, bps * spc); /* \boot\grub\ */
-		_asset_heap.free(root, bps * spc);
-		_asset_heap.free(efi, bps * spc);
-		_asset_heap.free(boot, bps * spc);
-		_asset_heap.free(bootdir, bps * spc);
-		_asset_heap.free(grubdir, bps * spc);
-		if (!ok) return false;
-
-		/* the redirect grub.cfg (cluster cfg_cl) */
-		char *cfg = (char *)_asset_heap.alloc(bps * spc);
-		if (!cfg) return false;
-		memset(cfg, 0, bps * spc);
-		Genode::memcpy(cfg, grub_cfg, grub_cfg_size);
-		ok = write_at(data_start + (cfg_cl - 2) * spc, cfg, bps * spc);
-		_asset_heap.free(cfg, bps * spc);
-		if (!ok) return false;
-
-		/* the bootx64.efi file data (cluster 5 onward) */
-		size_t off = 0;
-		while (off < bootx64_size) {
-			size_t const n = (bootx64_size - off < 256*1024) ? (bootx64_size - off) : 256*1024;
-			size_t const padded = (n + bps*spc - 1) / (bps*spc) * (bps*spc);
-			char *blk = (char *)_asset_heap.alloc(padded);
-			if (!blk) return false;
-			memset(blk, 0, padded);
-			Genode::memcpy(blk, (char const *)bootx64 + off, n);
-			bool const w = write_at(data_start + 3 * spc + (uint32_t)(off / (bps*spc)), blk, padded);
-			_asset_heap.free(blk, padded);
-			if (!w) return false;
-			off += n;
-		}
-		return true;
+		if (!_rtc.constructed()) return 0;
+		Rtc::Timestamp const t = _rtc->current_time();
+		int64_t y = (int64_t)t.year - (t.month <= 2);
+		int64_t const era = (y >= 0 ? y : y - 399) / 400;
+		int64_t const yoe = y - era * 400;
+		int64_t const doy = (153 * (t.month + (t.month > 2 ? -3 : 9)) + 2) / 5 + t.day - 1;
+		int64_t const doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+		int64_t const days = era * 146097 + doe - 719468;
+		return (uint32_t)(days * 86400 + t.hour * 3600 + t.minute * 60 + t.second);
 	}
 
 	void _install_start()
 	{
+		_inst_error = "";
+		uint32_t const now = _unix_now();
+		uint64_t const seed = ((uint64_t)_timer.elapsed_ms() << 32) ^ now ^ ((uint64_t)(uintptr_t)this >> 4);
+		Installer::Params p { _system_img.local_addr<uint8_t>(), _system_img.size(),
+		                      (uint64_t)_blk_info.block_count, _alloc_gb * 1024ull * 1024 * 1024, seed, now };
+		_job.construct(_inst_io, p);
+		if (!_job->start()) {
+			_inst_error = _job->error();
+			_install_phase = INST_FAILED; _installer_step = 3;
+			log("HermOS installer: cannot start: ", _job->error());
+			return;
+		}
 		_install_phase = INST_FORMATTING;
 		_install_pct = 0;
-		log("HermOS installer: install started (dynamic ", (unsigned)_alloc_gb, " GB)");
+		log("HermOS installer: install started, data partition ", (unsigned)_alloc_gb, " GB");
 	}
 
-	/* write a fresh GPT from scratch: protective MBR + primary/backup GPT headers
-	 * + partition entries for an EFI system partition (200 MiB) and a HermOS data
-	 * partition of alloc_gb gigabytes. Returns false if alloc_gb does not fit. */
-	bool _write_gpt(uint64_t alloc_gb)
-	{
-		using namespace Ext2;
-		uint64_t const total = _blk_info.block_count;               /* sectors on the disk */
-		uint64_t const ss    = _blk_info.block_size;                /* 512 */
-		uint64_t const efi_sectors = (200ull * 1024 * 1024) / ss;   /* 200 MiB */
-		uint64_t const gb_sectors  = (1024ull * 1024 * 1024) / ss;  /* 1 GiB  */
-
-		uint64_t const last_usable  = total - 34;
-		uint64_t const efi_first    = 34;
-		uint64_t const efi_last     = efi_first + efi_sectors - 1;
-		uint64_t const data_first   = efi_last + 1;
-		uint64_t const data_sectors = alloc_gb * gb_sectors;
-		uint64_t const data_last    = data_first + data_sectors - 1;
-
-		if (data_last > last_usable) return false;   /* alloc_gb exceeds the disk */
-
-		/* --- protective MBR (LBA 0) --- */
-		char mbr[512];
-		memset(mbr, 0, 512);
-		mbr[446] = 0x00;                                    /* non-bootable */
-		mbr[447] = 0x00; mbr[448] = 0x02; mbr[449] = 0x00;  /* CHS start 0/0/2 */
-		mbr[450] = 0xEE;                                    /* protective type */
-		mbr[451] = 0xFF; mbr[452] = 0xFF; mbr[453] = 0xFF;  /* CHS end */
-		put32(mbr + 454, 1);                                /* LBA start = 1 */
-		put32(mbr + 458, (uint32_t)(total - 1));            /* sector count (u32) */
-		mbr[510] = 0x55; mbr[511] = 0xAA;
-
-		/* --- primary GPT header (LBA 1) --- */
-		char hdr[512];
-		memset(hdr, 0, 512);
-		Genode::memcpy(hdr, "EFI PART", 8);
-		put32(hdr + 8,  0x00010000);      /* revision 1.0 */
-		put32(hdr + 12, 92);              /* header size */
-		put64(hdr + 24, 1);               /* current LBA */
-		put64(hdr + 32, total - 1);       /* backup LBA */
-		put64(hdr + 40, 34);              /* first usable LBA */
-		put64(hdr + 48, last_usable);     /* last usable LBA */
-		uint8_t const dguid[16] = { 0xf6,0x97,0x12,0xa5, 0x88,0xa7, 0xc1,0x47,
-		                            0xa5,0x5f, 0x4e,0x50, 0x3f,0x90, 0xb2,0xd6 };
-		Genode::memcpy(hdr + 56, dguid, 16);
-		put64(hdr + 72, 2);               /* entries LBA */
-		put32(hdr + 80, 128);             /* number of entries */
-		put32(hdr + 84, 128);             /* entry size */
-
-		/* --- partition entries (LBA 2) --- */
-		char entries[128 * 128];
-		memset(entries, 0, sizeof(entries));
-
-		uint8_t const efi_type[16]  = { 0x28,0x73,0x2a,0xc1, 0x1f,0xf8, 0xd2,0x11,
-		                                0xba,0x4b, 0x00,0xa0, 0xc9,0x3e, 0xc9,0x3b };
-		uint8_t const data_type[16] = { 0xaf,0x3d,0xc6,0x0f, 0x83,0x84, 0x72,0x47,
-		                                0x8e,0x79, 0x3d,0x69, 0xd8,0x47, 0x7d,0xe4 };
-		uint8_t const efi_uniq[16]  = { 0x01,0,0,0, 0,0, 0,0, 0,0, 0,0, 0,0, 0,0 };
-		uint8_t const data_uniq[16] = { 0x02,0,0,0, 0,0, 0,0, 0,0, 0,0, 0,0, 0,0 };
-
-		Genode::memcpy(entries + 0*128 + 0,  efi_type,  16);
-		Genode::memcpy(entries + 0*128 + 16, efi_uniq,  16);
-		put64(entries + 0*128 + 32, efi_first);
-		put64(entries + 0*128 + 40, efi_last);
-
-		Genode::memcpy(entries + 1*128 + 0,  data_type, 16);
-		Genode::memcpy(entries + 1*128 + 16, data_uniq, 16);
-		put64(entries + 1*128 + 32, data_first);
-		put64(entries + 1*128 + 40, data_last);
-
-		/* UTF-16LE partition names */
-		char const *name_efi  = "EFI";
-		char const *name_data = "GENODE";
-		for (int i = 0; name_efi[i];  ++i) entries[0*128 + 56 + 2*i] = name_efi[i];
-		for (int i = 0; name_data[i]; ++i) entries[1*128 + 56 + 2*i] = name_data[i];
-
-		/* --- CRCs --- */
-		put32(hdr + 88, crc32((uint8_t const *)entries, 128 * 128));
-		put32(hdr + 16, 0);
-		put32(hdr + 16, crc32((uint8_t const *)hdr, 92));
-
-		/* --- backup header (current/backup/entries LBAs swapped) --- */
-		char bhdr[512];
-		Genode::memcpy(bhdr, hdr, 92);
-		put64(bhdr + 24, total - 1);      /* current LBA -> backup */
-		put64(bhdr + 32, 1);              /* backup LBA -> primary */
-		put64(bhdr + 72, total - 33);     /* entries LBA -> backup entries */
-		put32(bhdr + 16, 0);
-		put32(bhdr + 16, crc32((uint8_t const *)bhdr, 92));
-
-		/* --- writes --- */
-		if (!_blk_io(Block::Packet_descriptor::WRITE, 0, mbr, 512)) return false;
-		if (!_blk_io(Block::Packet_descriptor::WRITE, 512, hdr, 512)) return false;
-		if (!_blk_io(Block::Packet_descriptor::WRITE, 1024, entries, 128 * 128)) return false;
-		if (!_blk_io(Block::Packet_descriptor::WRITE, (total - 33) * 512, entries, 128 * 128)) return false;
-		if (!_blk_io(Block::Packet_descriptor::WRITE, (total - 1) * 512, bhdr, 512)) return false;
-
-		return true;
-	}
-
+	/* one slice of work per timer tick, so the UI keeps showing progress */
 	void _install_tick()
 	{
-		using namespace Ext2;
-		uint64_t const gb_sectors  = (1024ull * 1024 * 1024) / 512;
-		uint64_t const efi_sectors = (200ull * 1024 * 1024) / 512;
-		uint64_t const data_sectors = _alloc_gb * gb_sectors;
+		if (!_job.constructed()) return;
+		for (int i = 0; i < 4; ++i) if (!_job->step()) break;
+		_install_pct = _job->percent();
 
-		switch (_install_phase) {
-		case INST_FORMATTING:
-			_data_off = (34 + efi_sectors) * 512;
-			if (!_write_gpt(_alloc_gb)) { _install_phase = INST_IDLE; log("HermOS installer: GPT FAILED"); return; }
-			if (!_ext2_format(data_sectors)) { _install_phase = INST_IDLE; log("HermOS installer: FORMAT FAILED"); return; }
-			_install_phase = INST_COPYING; _install_pct = 40;
-			log("HermOS installer: GPT + ext2 written (", (unsigned)_alloc_gb, " GB)");
+		using Installer::Phase;
+		switch (_job->phase()) {
+		case Phase::DONE:
+			_install_phase = INST_DONE; _install_pct = 100; _installer_step = 2;
+			log("HermOS installer: installed and verified (read back and compared) -> INST_COMPLETE");
 			break;
-
-		case INST_COPYING: {
-			if (!_e2_prepare(data_sectors)) { _install_phase = INST_IDLE; log("HermOS installer: PREPARE FAILED"); return; }
-			if (!_extract_boot_files()) { _install_phase = INST_IDLE; log("HermOS installer: EXTRACT FAILED"); return; }
-			void *bx = nullptr; size_t bx_size = 0;
-			if (_read_bootx64(&bx, &bx_size)) {
-				bool const ok = _fat32_format(34, efi_sectors, bx, bx_size);
-				_asset_heap.free(bx, bx_size ? bx_size : 1);
-				if (!ok) { _install_phase = INST_IDLE; log("HermOS installer: FAT32 FAILED"); return; }
-				log("HermOS installer: EFI partition written (bootx64 ", (unsigned)bx_size, " bytes)");
-			} else {
-				log("HermOS installer: bootx64 read failed (continuing without EFI)");
-			}
-			_install_phase = INST_VERIFYING; _install_pct = 96;
+		case Phase::FAILED:
+			_inst_error = _job->error();
+			_install_phase = INST_FAILED; _installer_step = 3;
+			log("HermOS installer: FAILED: ", _job->error());
 			break;
-		}
-
-		case INST_VERIFYING: {
-			char gpt[512];
-			bool const ok = _blk_io(Block::Packet_descriptor::READ, 512, gpt, 512);
-			char const sig[8] = { 'E','F','I',' ','P','A','R','T' };
-			bool is_gpt = ok;
-			for (int i = 0; i < 8 && is_gpt; ++i) is_gpt = (gpt[i] == sig[i]);
-			if (is_gpt) {
-				_install_phase = INST_DONE; _install_pct = 100;
-				_installer_step = 2;   /* INST_COMPLETE */
-				log("HermOS installer: boot image verified (GPT ok) -> INST_COMPLETE");
-			} else {
-				_install_phase = INST_IDLE; log("HermOS installer: VERIFY FAILED");
-			}
-			break;
-		}
-
-		case INST_DONE:
-		default:
-			break;
+		case Phase::WIPE: case Phase::BOOT: _install_phase = INST_FORMATTING; break;
+		case Phase::DATA:                   _install_phase = INST_COPYING;    break;
+		default:                            _install_phase = INST_VERIFYING;  break;
 		}
 		_dirty = true;
 	}
@@ -3501,13 +2567,22 @@ namespace Hermos {
 		}
 		case 1: {
 			_text(s, _icx(26.0f, "Installing HermOS"), 180, 26.0f, _white(), "Installing HermOS");
-			_text(s, _icx(13.0f, "Formatting the disk and writing the system."), 226, 13.0f, _muted(),
-			      "Formatting the disk and writing the system.");
-			char const *steps[4] = { "Writing partition table...", "Formatting filesystems...",
-			                         "Installing core system...", "Verifying installation..." };
-			int const done = _install_phase >= INST_DONE ? 4
-			               : _install_phase >= INST_VERIFYING ? 3
-			               : _install_phase >= INST_COPYING ? 2 : 0;
+			Genode::String<128> const where("Writing to ", _disk_count > 0 ? _disks[_disk_sel].model.string() : "disk",
+			                                ". Do not remove the disk or power off.");
+			_text(s, _icx(13.0f, where.string()), 226, 13.0f, _muted(), where.string());
+			char const *steps[4] = { "Preparing the disk...", "Copying the system...",
+			                         "Creating the data partition...", "Writing the partition table and verifying..." };
+			int done = 0;
+			if (_job.constructed()) {
+				using Installer::Phase;
+				switch (_job->phase()) {
+				case Phase::BOOT:   done = 1; break;
+				case Phase::DATA:   done = 2; break;
+				case Phase::GPT: case Phase::VERIFY: done = 3; break;
+				case Phase::DONE:   done = 4; break;
+				default: break;
+				}
+			}
 			int iy = 300;
 			for (int i = 0; i < 4; ++i) {
 				bool const chk = i < done;
@@ -3524,10 +2599,18 @@ namespace Hermos {
 		case 2: {
 			_draw_icon("logo", _w / 2, 320);
 			_text(s, _icx(26.0f, "HermOS installation complete"), 400, 26.0f, _white(), "HermOS installation complete");
-			_text(s, _icx(14.0f, "Your computer is now ready. Reboot to start HermOS."), 444, 14.0f, _muted(),
-			      "Your computer is now ready. Reboot to start HermOS.");
+			_text(s, _icx(14.0f, "Installed and verified. Remove the installer media, then reboot."), 444, 14.0f, _muted(),
+			      "Installed and verified. Remove the installer media, then reboot.");
 			_button(s, _w / 2 - 360, _iby(), 150, 36, "Explore HermOS", false);
 			_button(s, _w / 2 + 240, _iby(), 150, 36, "Reboot Now", true);
+			break;
+		}
+		case 3: {
+			_text(s, _icx(26.0f, "Installation failed"), 220, 26.0f, _white(), "Installation failed");
+			_text(s, _icx(14.0f, _inst_error.string()), 290, 14.0f, _solar(), _inst_error.string());
+			_text(s, _icx(13.0f, "The disk was not left in a usable state. Nothing else was changed."), 340, 13.0f, _muted(),
+			      "The disk was not left in a usable state. Nothing else was changed.");
+			_button(s, _w / 2 - 75, _iby(), 150, 36, "Close", true);
 			break;
 		}
 		}
@@ -4291,7 +3374,7 @@ namespace Hermos {
 		void _handle_timer()
 		{
 			/* drive the installer's format + copy while installing */
-			if (_installer_mode && _install_phase != INST_IDLE && _install_phase != INST_DONE) {
+			if (_installer_mode && _install_phase != INST_IDLE && _install_phase != INST_DONE && _install_phase != INST_FAILED) {
 				_install_tick();
 				_render();
 				_dirty = false;
