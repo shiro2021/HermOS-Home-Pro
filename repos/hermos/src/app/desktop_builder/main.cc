@@ -36,6 +36,7 @@
 
 #include <hermos_ui/window_geometry.h>
 #include <hermos_ui/cell_session.h>
+#include <hermos_manifest/manifest.h>
 
 #include "scene.h"
 #include "font_renderer.h"
@@ -1885,9 +1886,39 @@ namespace Hermos {
 			}
 		}
 
+		/* Phase 2 Capability Broker: the per-kind manifest (capabilities + quotas)
+		 * each app must satisfy before it is allowed to launch. */
+		static char const *_manifest_for(App_kind k)
+		{
+			switch (k) {
+			case APP_FILES:
+				return "+ manifest\n name: Files\n kind: system\n + caps\n  vfs: /apps/files,ro\n  nic: none\n  block: none\n  gui: cell\n + quotas\n  ram: 32M\n  cpu: 25";
+			case APP_TERMINAL:
+				return "+ manifest\n name: Terminal\n kind: system\n + caps\n  vfs: /apps/terminal,ro\n  nic: downlink\n  block: none\n  gui: cell\n + quotas\n  ram: 32M\n  cpu: 25";
+			case APP_TESTNIT:
+				return "+ manifest\n name: TestNit\n kind: system\n + caps\n  vfs: /apps/testnit,ro\n  nic: none\n  block: none\n  gui: cell\n + quotas\n  ram: 16M\n  cpu: 25";
+			default:
+				return nullptr;
+			}
+		}
+
 		/* spawn an app into the first free Cell slot via the nested init */
 		void _launch_app(App_kind kind)
 		{
+			/* Phase 2 Capability Broker: validate the manifest before launching */
+			char const *mtxt = _manifest_for(kind);
+			if (mtxt) {
+				Hermos::Manifest m;
+				Hermos::parse_manifest(mtxt, Genode::strlen(mtxt), m);
+				char reason[128];
+				int const code = Hermos::validate_manifest(m, reason, sizeof(reason));
+				if (code != 0) {
+					log("HermOS: launch REJECTED '", _app_binary(kind), "': ", (char const *)reason);
+					return;
+				}
+				log("HermOS: manifest ok '", _app_binary(kind), "' nic=", (int)m.nic, " block=",
+				    (int)m.block, " ram=", m.ram_mb, "M cpu=", m.cpu);
+			}
 			int slot = -1;
 			for (int i = 0; i < MAX_APPS; ++i)
 				if (_app_kind[i] == APP_NONE) { slot = i; break; }
@@ -1906,6 +1937,21 @@ namespace Hermos {
 			_app_kind[slot] = APP_NONE;
 			log("HermOS: slot ", slot, " released, init reconfigured (quota returned)");
 			_emit_apps_config();
+		}
+
+		/* Phase 2 Kill Mode (Meta+K): tear down the focused Cell — destroy its
+		 * sandbox and return its RAM/CPU quota (the broker's kill switch). */
+		void _kill_focused()
+		{
+			int idx = -1;
+			for (int i = 0; i < NUM_CELLS; ++i)
+				if (_cell_state[i] == CELL_ACTIVE) { idx = i; break; }
+			if (idx < 0) { log("HermOS kill mode: no active cell"); return; }
+			_win_open[idx] = false;
+			_gui_root.close_cell(idx);
+			_close_app(idx);
+			_dirty = true;
+			log("HermOS kill mode: cell ", idx, " killed (sandbox destroyed, quota returned)");
 		}
 
 		/* map a registry stack name to an App_kind */
@@ -2025,6 +2071,7 @@ namespace Hermos {
 						g.node("parent", [&] { g.attribute("label", "hermos_terminal.config"); });
 					});
 					g.node("service", [&] { g.attribute("name", "Gui"); g.node("parent"); });
+					g.node("service", [&] { g.attribute("name", "Nic"); g.node("parent"); });
 					g.node("any-service", [&] { g.node("parent"); });
 				});
 			});
@@ -2184,6 +2231,8 @@ namespace Hermos {
 					g.node("service", [&] { g.attribute("name", "Gui"); });
 					g.node("service", [&] { g.attribute("name", "Timer"); });
 					g.node("service", [&] { g.attribute("name", "Rtc"); });
+					g.node("service", [&] { g.attribute("name", "Nic"); });
+					g.node("service", [&] { g.attribute("name", "Block"); });
 				});
 				g.node("default-route", [&] {
 					g.node("any-service", [&] { g.node("parent"); });
@@ -2195,6 +2244,21 @@ namespace Hermos {
 				g.node("report", [&] { g.attribute("child_ram", "yes"); });
 				for (int i = 0; i < MAX_APPS; ++i) {
 					if (_app_kind[i] == APP_NONE) continue;
+
+					/* Phase 2 Capability Broker: enforce the manifest's caps */
+					Hermos::Manifest m;
+					char const *mtxt = _manifest_for(_app_kind[i]);
+					bool nic_route = false, block_route = false;
+					if (mtxt) {
+						Hermos::parse_manifest(mtxt, Genode::strlen(mtxt), m);
+						nic_route   = (m.nic   != Hermos::Manifest::NIC_NONE);
+						block_route = (m.block != Hermos::Manifest::BLK_NONE);
+						log("HermOS broker: '", _app_binary(_app_kind[i]), "' nic=", (int)m.nic,
+						    " block=", (int)m.block, " vfs=", (char const *)m.vfs,
+						    nic_route ? " [Nic route]" : " [no Nic]",
+						    block_route ? " [Block route]" : " [no Block]");
+					}
+
 					if (_app_kind[i] == APP_TERMINAL) { _emit_terminal_stack(g, i); continue; }
 					if (_app_kind[i] == APP_FILES)    { _emit_files_stack(g, i);    continue; }
 					g.node("start", [&] {
@@ -2208,6 +2272,12 @@ namespace Hermos {
 								g.attribute("name", "Gui");
 								g.node("parent");
 							});
+							if (nic_route) {
+								g.node("service", [&] { g.attribute("name", "Nic"); g.node("parent"); });
+							}
+							if (block_route) {
+								g.node("service", [&] { g.attribute("name", "Block"); g.node("parent"); });
+							}
 							g.node("any-service", [&] { g.node("parent"); });
 						});
 					});
@@ -4464,6 +4534,7 @@ namespace Hermos {
 						case Input::KEY_L:        _sstate.left.toggle();   _dirty = true; return;
 						case Input::KEY_B:        _sstate.bottom.toggle(); _dirty = true; return;
 						case Input::KEY_T:        _toggle_tile();  return;
+						case Input::KEY_K:        _kill_focused(); return;
 						case Input::KEY_LEFT:     _quick_tile(0);  return;
 						case Input::KEY_RIGHT:    _quick_tile(1);  return;
 						case Input::KEY_UP:       _quick_tile(2);  return;
