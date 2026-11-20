@@ -114,3 +114,8 @@ theme
   + bottom
     mode: visible
     size: 28
+  # the Agents & Workers pane (with the rail); the user hides and shows it with its X,
+  # the rail's Agents tile or Meta+A
+  + right
+    mode: visible
+    size: 356

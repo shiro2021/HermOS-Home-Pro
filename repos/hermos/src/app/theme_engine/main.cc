@@ -79,7 +79,8 @@ namespace Theme {
 		/* Plasma-style panels */
 		char _pl_mode[16] { "autohide" };
 		char _pb_mode[16] { "visible" };
-		int  _pl_size { 78 }, _pb_size { 28 };
+		char _pr_mode[16] { "visible" };
+		int  _pl_size { 78 }, _pb_size { 28 }, _pr_size { 356 };
 
 		/* Step 3: the normalized snap slots (quick tiling) */
 		enum { MAX_SNAPS = 4 };
@@ -150,7 +151,7 @@ namespace Theme {
 		/* parse the HID: "+"-indented tree with "key: value" lines */
 		void _parse(char const *buf, size_t len)
 		{
-			enum Sect { SECT_NONE, SECT_CELL, SECT_SIDEBAR, SECT_ICONS, SECT_SNAP, SECT_PLEFT, SECT_PBOTTOM, SECT_CMDBAR, SECT_APPCELL, SECT_FRAME, SECT_INK } sect = SECT_NONE;
+			enum Sect { SECT_NONE, SECT_CELL, SECT_SIDEBAR, SECT_ICONS, SECT_SNAP, SECT_PLEFT, SECT_PBOTTOM, SECT_PRIGHT, SECT_CMDBAR, SECT_APPCELL, SECT_FRAME, SECT_INK } sect = SECT_NONE;
 			Cell *cur = nullptr;
 			Snap *scur = nullptr;
 
@@ -199,6 +200,7 @@ namespace Theme {
 				else if (Genode::strcmp(word, "ink") == 0)        { sect = SECT_INK;     cur = nullptr; scur = nullptr; }
 				else if (Genode::strcmp(word, "left") == 0)   { sect = SECT_PLEFT;   cur = nullptr; scur = nullptr; }
 				else if (Genode::strcmp(word, "bottom") == 0) { sect = SECT_PBOTTOM; cur = nullptr; scur = nullptr; }
+				else if (Genode::strcmp(word, "right") == 0)  { sect = SECT_PRIGHT;  cur = nullptr; scur = nullptr; }
 					continue;
 				}
 
@@ -247,10 +249,10 @@ namespace Theme {
 					for (auto const &m : map) if (Genode::strcmp(key, m.k) == 0) { *m.v = val; _cb.set = true; }
 				} else if (Genode::strcmp(key, "scale") == 0) {
 					if (val >= 100) _scale = val;
-				} else if (Genode::strcmp(key, "mode") == 0 && (sect == SECT_PLEFT || sect == SECT_PBOTTOM)) {
-					_copy_val(sect == SECT_PLEFT ? _pl_mode : _pb_mode, val_start, le);
-				} else if (Genode::strcmp(key, "size") == 0 && (sect == SECT_PLEFT || sect == SECT_PBOTTOM)) {
-					(sect == SECT_PLEFT ? _pl_size : _pb_size) = val;
+				} else if (Genode::strcmp(key, "mode") == 0 && (sect == SECT_PLEFT || sect == SECT_PBOTTOM || sect == SECT_PRIGHT)) {
+					_copy_val(sect == SECT_PLEFT ? _pl_mode : sect == SECT_PBOTTOM ? _pb_mode : _pr_mode, val_start, le);
+				} else if (Genode::strcmp(key, "size") == 0 && (sect == SECT_PLEFT || sect == SECT_PBOTTOM || sect == SECT_PRIGHT)) {
+					(sect == SECT_PLEFT ? _pl_size : sect == SECT_PBOTTOM ? _pb_size : _pr_size) = val;
 				} else if (Genode::strcmp(key, "id") == 0 && sect == SECT_CELL && cur) {
 					size_t const il = (size_t)(le - val_start);
 					size_t const icp = il < 15 ? il : 15;
@@ -396,6 +398,7 @@ namespace Theme {
 					xml.node("panels", [&] () {
 						xml.node("left",   [&] () { xml.attribute("mode", _pl_mode); xml.attribute("size", _pl_size); });
 						xml.node("bottom", [&] () { xml.attribute("mode", _pb_mode); xml.attribute("size", _pb_size); });
+						xml.node("right",  [&] () { xml.attribute("mode", _pr_mode); xml.attribute("size", _pr_size); });
 					});
 					xml.node("snaps", [&] () {
 						for (int i = 0; i < _snap_count; ++i) {

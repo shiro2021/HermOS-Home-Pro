@@ -37,7 +37,7 @@ namespace Pal {
 struct Rect { float x, y, w, h; };
 
 enum class Visibility { Hidden, AutoHide, AlwaysVisible };
-enum class Edge { Left, Bottom };
+enum class Edge { Left, Bottom, Right };
 
 static inline float ease_out_cubic(float t) { t = 1.0f - clampf(t, 0, 1); return 1.0f - t * t * t; }
 
@@ -105,6 +105,8 @@ static constexpr int MAX_APP_ENTRIES = 10;
 struct Hits
 {
 	Rect left_grip, bottom_grip, left_panel, bottom_panel;
+	Rect pane_close;                    /* the X of the Agents & Workers pane (hides it) */
+	Rect rail[6];                       /* navigation rail tiles; tile 0 (Agents) toggles the pane */
 	Rect launcher[4];
 	int  launcher_count { 0 };
 	Rect app_play[MAX_APP_ENTRIES];     /* launch (inactive) */
@@ -176,6 +178,7 @@ struct State
 	int   cw { 1536 }, ch { 1024 };
 	Panel left   { Edge::Left,   Visibility::AutoHide,      78.0f };
 	Panel bottom { Edge::Bottom, Visibility::AlwaysVisible, 28.0f };
+	Panel right  { Edge::Right,  Visibility::AlwaysVisible, 356.0f };   /* Agents & Workers pane + rail */
 
 	char const *clock   { "Tue 10 Dec 2024 07:42" };
 	char const *prompt  { nullptr };       /* user-typed text, null = placeholder */
@@ -560,7 +563,7 @@ static inline void draw_greeting_search(Ctx &g, State const &st)
 
 /* ------------------------------------------------------ navigation rail (right) */
 
-static inline void draw_rail(Ctx &g, State const &st)
+static inline void draw_rail(Ctx &g, State const &st, Hits &hits)
 {
 	float const x = 1090, y = 12, w = 92, h = 540;
 	Poly p; chamfer_poly(p, g.X(x), g.Y(y), g.L(w), g.L(h), g.L(24), 0, 0, g.L(24));
@@ -578,6 +581,7 @@ static inline void draw_rail(Ctx &g, State const &st)
 	for (int i = 0; i < 6; ++i) {
 		float const cy = 115 + float(i) * 70.8f;
 		bool const act = i == st.rail_active;
+		hits.rail[i] = { 1128 - 26, cy - 26, 52, 64 };     /* tile + label */
 		hex_tile(g, 1128, cy, 48, 46, act);
 		Rgba const ic = act ? Rgba { 255, 232, 205, 1.0f } : Rgba { 236, 238, 240, 0.96f };
 		switch (i) {
@@ -635,6 +639,7 @@ static inline void draw_sidebar(Ctx &g, State const &st, Hits &hits)
 
 	g.text(g.f.med, 1200, 12, 17.3f, Pal::white, "Agents & Workers");
 	Icon::close_x(g, 1514, 22, 0.95f, Rgba { 230, 232, 235, 0.95f }, 1.7f);
+	hits.pane_close = { 1498, 6, 32, 32 };
 	char hdr[24];
 	{
 		/* "Active (n)" */
@@ -687,7 +692,7 @@ static inline void draw_sidebar(Ctx &g, State const &st, Hits &hits)
 	if (nact == 0)
 		g.text(g.f.reg, 1200, 100, 12.0f, Rgba { 150, 156, 164, 1.0f }, "Nothing is running.");
 
-	char ihdr[24]; { int k = 0; char const *t = "Available ("; while (*t) ihdr[k++] = *t++;
+	char ihdr[24]; { int k = 0; char const *t = "Inactive ("; while (*t) ihdr[k++] = *t++;
 	                 ihdr[k++] = char('0' + (nina > 9 ? 9 : nina)); ihdr[k++] = ')'; ihdr[k] = 0; }
 	g.text(g.f.med, 1200, 273, 13.4f, Pal::white, ihdr);
 }
@@ -914,8 +919,6 @@ static inline void render_base(Canvas &c, Fonts &f, Assets &a, State &st, Hits &
 	draw_wallpaper(g);
 	draw_header(g);
 	draw_greeting_search(g, st);
-	draw_rail(g, st);
-	draw_sidebar(g, st, hits);
 
 	/* the Cells below the first hosted one, in z-order (static content only) */
 	int const split = top_split(st);
@@ -947,6 +950,29 @@ static inline void render_panels(Canvas &c, Fonts &f, Assets &a, State &st, Hits
 {
 	c.ink = &st.ink; c.inactive = false;
 	Ctx g = make_ctx(c, f, a);
+	/* the right group: the navigation rail and the Agents & Workers pane slide out to the edge
+	 * together; the rail stays at the edge so the pane can be brought back with its Agents tile */
+	{
+		float const sh = st.right.shown();
+		float const pane_w = st.right.thickness;
+		Rect const none { 0, 0, 0, 0 };
+		hits.pane_close = none;
+		for (int i = 0; i < MAX_APP_ENTRIES; ++i) { hits.app_close[i] = none; hits.app_play[i] = none; }
+		hits.app_play_n = 0;
+
+		float const rdx = (1.0f - sh) * pane_w;                 /* rail: ends docked at the right edge */
+		Ctx gr = g; gr.ox += g.L(rdx);
+		draw_rail(gr, st, hits);
+		for (int i = 0; i < 6; ++i) hits.rail[i].x += rdx;
+
+		if (sh > 0.002f) {
+			float const pdx = (1.0f - sh) * (pane_w + 8.0f);
+			Ctx gp = g; gp.ox += g.L(pdx);
+			draw_sidebar(gp, st, hits);
+			hits.pane_close.x += pdx;
+			for (int i = 0; i < MAX_APP_ENTRIES; ++i) { hits.app_close[i].x += pdx; hits.app_play[i].x += pdx; }
+		}
+	}
 	draw_taskbar(g, st);
 	draw_left_dock(g, st, hits);
 

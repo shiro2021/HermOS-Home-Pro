@@ -54,7 +54,7 @@ function carries one of these marks:
 | Clock (taskbar) | VERIFIED | Live from the RTC. |
 | Left launcher dock: Files, Terminal, Install | VERIFIED | Auto-hides; hover the left edge. Install only on installable media. |
 | Hide/show panels: hover, `Meta+L`, `Meta+B`, grip tabs, taskbar button | VERIFIED | Animated by elapsed time. |
-| Agents & Workers panel: running apps with a close button, ▶ to launch | VERIFIED | Lists real apps only. |
+| Agents & Workers pane: running apps with a close button, ▶ to launch | VERIFIED | Lists real apps only; "Active (n)" / "Inactive (n)". Hides and reveals by user click: the pane's X, the rail's Agents tile, or `Meta+A`; the rail docks at the right edge while it is hidden; Cells may use the freed width. Mode and width are `panels > right` in `theme.hid`. The mock-up's per-card ⋯ menu and sample thumbnails are not drawn (nothing real behind them). |
 | "Hermes Agent: Ready" status | BUILT | Always shows Ready; the agent's real state is not queried. |
 | Windows: frame, close, minimise, restore from the taskbar | VERIFIED | |
 | Window maximise (uses the Plasma-style client area) | BUILT | |

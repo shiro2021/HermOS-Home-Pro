@@ -1819,6 +1819,8 @@ namespace Hermos {
 		unsigned _glass_a   { 220 };
 		uint8_t _dock_r     {  46 }, _dock_g     {  50 }, _dock_b     {  56 };
 		int _sb_x { 901 }, _sb_y { 77 }, _sb_w { 102 }, _sb_h { 614 };
+		/* width the right pane takes right now (0 while it is hidden): Cells may use the space */
+		int _sb_w_live() const { return int(float(_sb_w) * _sstate.right.t); }
 
 		/* Step 3: the normalized snap slots from the theme_state report */
 		enum { MAX_SNAPS = 4 };
@@ -3116,7 +3118,7 @@ namespace Hermos {
 				 * or the bottom dock (bottom edge). */
 				constexpr int MIN_W = 150;
 				constexpr int MIN_H = 100;
-				int max_w = (int)_fb.mode().area.w - _sb_w - g.x;
+				int max_w = (int)_fb.mode().area.w - _sb_w_live() - g.x;
 				int max_h = (int)_fb.mode().area.h - _dock_y_offset - g.y;
 				/* keep the clamp bounds ordered even when the drag pushes the
 				 * cell past the sidebar/dock guard */
@@ -3294,7 +3296,7 @@ namespace Hermos {
 					 * raw screen. The dock + sidebar are the "struts". */
 					g.x = 0;
 					g.y = 0;
-					g.w = (int)_fb.mode().area.w - _sb_w;
+					g.w = (int)_fb.mode().area.w - _sb_w_live();
 					g.h = (int)_fb.mode().area.h - _dock_y_offset;
 
 					log("HermOS cell ", idx, " maximized (work area)");
@@ -3593,6 +3595,10 @@ namespace Hermos {
 		{
 			Scene::Map const m = Scene::map_for(_w, _h);
 
+			/* the right group: the pane's X hides it; the rail's Agents tile hides or reveals it */
+			if (m.hit(_shits.pane_close, x, y) && _sstate.right.visible()) { _sstate.right.toggle(); _dirty = true; return true; }
+			if (m.hit(_shits.rail[0], x, y)) { _sstate.right.toggle(); _dirty = true; return true; }
+
 			/* sidebar: start an app, or stop a running one */
 			for (int i = 0; i < _sstate.app_count; ++i) {
 				Scene::AppEntry const &a = _sstate.apps[i];
@@ -3645,7 +3651,7 @@ namespace Hermos {
 							{ Scene::Edge::Bottom, _sstate.bottom.mode, _sstate.bottom.thickness * m.k, _sstate.bottom.t, _sstate.bottom.pinned, false });
 						Cell_geom &g = _geom[idx];
 						g.x = int(area.x); g.y = int(area.y);
-						g.w = int(area.w) - _sb_w; g.h = int(area.h) - _dock_y_offset;
+						g.w = int(area.w) - _sb_w_live(); g.h = int(area.h) - _dock_y_offset;
 						log("HermOS cell ", idx, " maximized (client area)");
 					} else {   /* undo: back to the theme slot */
 						log("HermOS cell ", idx, " restore");
@@ -3720,6 +3726,7 @@ namespace Hermos {
 					if (dt < 1.0f)   dt = 1.0f;
 					bool moved = _sstate.left.update(dt);
 					moved = _sstate.bottom.update(dt) || moved;
+					moved = _sstate.right.update(dt)  || moved;
 					if (moved) { _render(); _dirty = false; }
 				} else {
 					/* re-render while the bottom panel is mid-slide */
@@ -3895,8 +3902,10 @@ namespace Hermos {
 					};
 					panels.with_optional_sub_node("left",   [&] (Xml_node const &n) { apply(_sstate.left,   n); });
 					panels.with_optional_sub_node("bottom", [&] (Xml_node const &n) { apply(_sstate.bottom, n); });
+					panels.with_optional_sub_node("right",  [&] (Xml_node const &n) { apply(_sstate.right,  n); });
 					_sstate.left.t   = _sstate.left.wants_shown()   ? 1.0f : 0.0f;
 					_sstate.bottom.t = _sstate.bottom.wants_shown() ? 1.0f : 0.0f;
+					_sstate.right.t  = _sstate.right.wants_shown()  ? 1.0f : 0.0f;
 				});
 
 				/* Step 3: the normalized snap slots (quick tiling) */
@@ -4053,6 +4062,7 @@ namespace Hermos {
 						switch (key) {
 						case Input::KEY_L:        _sstate.left.toggle();   _dirty = true; return;
 						case Input::KEY_B:        _sstate.bottom.toggle(); _dirty = true; return;
+						case Input::KEY_A:        _sstate.right.toggle();  _dirty = true; return;   /* Agents & Workers */
 						case Input::KEY_T:        _toggle_tile();  return;
 						case Input::KEY_LEFT:     _quick_tile(0);  return;
 						case Input::KEY_RIGHT:    _quick_tile(1);  return;
