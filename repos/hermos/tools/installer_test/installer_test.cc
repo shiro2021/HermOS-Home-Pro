@@ -9,6 +9,7 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -28,6 +29,13 @@ int main(int argc, char **argv)
 	struct stat st; fstat(fd, &st);
 
 	Installer::Io io { &fd, wr, rd };
+	if (argc > 4 && !strcmp(argv[4], "find")) {       /* ./installer_test x disk 0 find */
+		Installer::PartInfo pi;
+		bool const gpt = Installer::find_partition(io, "HERMOS-DATA", pi);
+		printf("gpt=%d found=%d number=%u first=%llu last=%llu (%llu MiB)\n", gpt, pi.found, pi.number,
+		       (unsigned long long)pi.first, (unsigned long long)pi.last, (unsigned long long)(pi.bytes() >> 20));
+		return pi.found ? 0 : 1;
+	}
 	Installer::Params p { payload.data(), psz, (uint64_t)st.st_size / 512, (uint64_t)(atof(argv[3]) * 1024.0 * 1024 * 1024),
 	                      (uint64_t)time(nullptr) ^ ((uint64_t)getpid() << 20), (uint32_t)time(nullptr) };
 	static Installer::Job job(io, p);

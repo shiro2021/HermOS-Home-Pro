@@ -503,6 +503,7 @@ namespace Hermos {
 			for (int i = 0; i < _disk_count; ++i)
 				if (_disks[i].label == prev) _disk_sel = i;
 			_select_disk(_disk_sel);
+			_scan_data_partition();
 			log("HermOS installer: ", _disk_count, " installable disk(s) found");
 			for (int i = 0; i < _disk_count; ++i)
 				log("  ", _disks[i].label.string(), ": ", _disks[i].model.string(), ", ",
@@ -560,6 +561,42 @@ namespace Hermos {
 				log("HermOS block: connecting to ", d.label.string(), " failed");
 				return false;
 			}
+		}
+
+		/* ---- the persistent data partition (HERMOS-DATA, written by the installer) ----
+		 * Found by name in the GPT of every reported disk; nothing here knows which
+		 * disk or port it is on. The scan opens one short-lived Block session per
+		 * disk, only for disks the drivers have reported. */
+		Genode::String<16> _data_label { };      /* "ahci1", "nvme0", ... empty = none */
+		Genode::String<64> _data_model { };
+		unsigned           _data_part  { 0 };
+		uint64_t           _data_bytes { 0 };
+
+		void _scan_data_partition()
+		{
+			_data_label = ""; _data_model = ""; _data_part = 0; _data_bytes = 0;
+			if (_block.constructed()) return;                  /* the installer owns a disk right now */
+			for (int i = 0; i < _disk_count && !_data_part; ++i) {
+				Disk const &d = _disks[i];
+				if (d.block_size != 512) continue;
+				try {
+					_block.construct(_env, &_block_alloc, 256 * 1024, Genode::Session_label(d.label.string()));
+					_blk_info = _block->info();
+					Installer::PartInfo pi;
+					bool const gpt = Installer::find_partition(_inst_io, "HERMOS-DATA", pi);
+					_block.destruct();
+					if (gpt && pi.found) {
+						_data_label = d.label; _data_model = d.model;
+						_data_part = pi.number; _data_bytes = pi.bytes();
+						log("HermOS data partition: ", d.label.string(), " partition ", pi.number,
+						    " (", (unsigned)(pi.bytes() >> 20), " MiB) on ", d.model.string());
+					}
+				} catch (...) {
+					if (_block.constructed()) _block.destruct();
+					log("HermOS data partition: could not read the GPT of ", d.label.string());
+				}
+			}
+			if (!_data_part) log("HermOS data partition: none found, /home stays in RAM");
 		}
 
 		/* ask the platform driver to reset the machine (ACPI reset register) */
@@ -3290,6 +3327,7 @@ namespace Hermos {
 			if (_disk_count > 0) {
 				Genode::String<72> d(_disks[0].model, ", ", (unsigned)(_disks[0].bytes() / (1024ull * 1024 * 1024)), " GB");
 				if (_disk_count > 1) d = Genode::String<72>(d, " +", _disk_count - 1, " more");
+				if (_data_part) d = Genode::String<72>(d, ", data ", (unsigned)(_data_bytes >> 30), " GB");
 				_cpy(si.storage, sizeof si.storage, d.string());
 			} else _cpy(si.storage, sizeof si.storage, "no disk found");
 		}

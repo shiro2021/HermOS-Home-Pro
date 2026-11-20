@@ -579,6 +579,49 @@ inline bool Job::step()
 	}
 }
 
+/* ------------------------------------------------ finding the data partition */
+
+struct PartInfo
+{
+	bool     found { false };
+	uint32_t number { 0 };           /* 1-based GPT entry number */
+	uint64_t first { 0 }, last { 0 };
+	uint64_t bytes() const { return (last - first + 1) * SECTOR; }
+};
+
+/* Look for a partition by its GPT name (ASCII, as the installer writes it).
+ * Validates the header and entry-array CRCs; returns false if the disk has no
+ * valid GPT. `found` tells whether the named partition is on it. */
+static inline bool find_partition(Io &io, char const *name, PartInfo &out)
+{
+	static uint8_t hdr[SECTOR];
+	static uint8_t entries[128 * 128];
+	out = PartInfo();
+	if (!io.read(io.ctx, SECTOR, hdr, SECTOR)) return false;
+	static char const sig[8] = { 'E','F','I',' ','P','A','R','T' };
+	if (!same(hdr, sig, 8) || get32(hdr + 12) != 92) return false;
+	uint8_t tmp[92]; copy(tmp, hdr, 92); put32(tmp + 16, 0);
+	if (crc32(tmp, 92) != get32(hdr + 16)) return false;
+	uint32_t const n = get32(hdr + 80), esz = get32(hdr + 84);
+	if (esz != 128 || n == 0 || n > 128) return false;
+	if (!io.read(io.ctx, get64(hdr + 72) * SECTOR, entries, (size_t)n * esz)) return false;
+	if (crc32(entries, (size_t)n * esz) != get32(hdr + 88)) return false;
+
+	for (uint32_t i = 0; i < n; ++i) {
+		uint8_t const *e = entries + i * 128;
+		bool used = false; for (int k = 0; k < 16; ++k) if (e[k]) used = true;
+		if (!used) continue;
+		/* names are UTF-16LE; compare as ASCII */
+		bool eq = true; int k = 0;
+		for (; name[k] && eq; ++k) eq = e[56 + 2 * k] == (uint8_t)name[k] && e[57 + 2 * k] == 0;
+		if (eq && e[56 + 2 * k] == 0 && e[57 + 2 * k] == 0) {
+			out.found = true; out.number = i + 1; out.first = get64(e + 32); out.last = get64(e + 40);
+			return true;
+		}
+	}
+	return true;
+}
+
 } /* namespace Installer */
 
 #endif /* _HERMOS_INSTALLER_DISK_H_ */
