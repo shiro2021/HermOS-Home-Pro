@@ -2466,13 +2466,27 @@ namespace Hermos {
 			});
 		}
 
+		/* printable, shortened excerpt for the log: prompts are private, replies are untrusted text */
+		static Genode::String<100> _excerpt(char const *s, size_t len)
+		{
+			char buf[96]; size_t o = 0;
+			size_t i = 0;
+			for (; i < len && s[i] && o < 80; ++i) {
+				unsigned char const c = (unsigned char)s[i];
+				buf[o++] = (c < 0x20 || c == 0x7f) ? '?' : char(c);
+			}
+			if (i < len && s[i]) { buf[o++] = '.'; buf[o++] = '.'; buf[o++] = '.'; }
+			buf[o] = 0;
+			return Genode::String<100>(Cstring(buf));
+		}
+
 		void _handle_ai_command()
 		{
 			_ai_command->update();
 			char const *const p = _ai_command->local_addr<char>();
 			size_t const n = _ai_command->size();
 			_ai_response = Genode::String<2048>(Cstring(p, n < 2047 ? n : 2047));
-			log("HermOS ai_command: ", n, " bytes: '", _ai_response, "'");
+			log("HermOS ai_command: ", n, " bytes: '", _excerpt(p, n), "'");
 			_ai_waiting = false;
 			_render();
 		}
@@ -2480,7 +2494,8 @@ namespace Hermos {
 		void _submit_prompt()
 		{
 			if (_prompt_len == 0) return;
-			log("HermOS submitting prompt: '", static_cast<char const *>(_prompt), "'");
+			log("HermOS submitting prompt (", (unsigned)_prompt_len, " chars): '",
+			    _excerpt(static_cast<char const *>(_prompt), _prompt_len), "'");
 			_ai_waiting = true;
 			(void)_ui_intent.generate_xml([&] (Xml_generator &g) {
 				g.attribute("prompt", _prompt);

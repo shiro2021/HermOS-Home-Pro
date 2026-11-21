@@ -85,20 +85,60 @@ namespace {
 	/*
 	 * TLS draws its randomness from /dev/random. A constant or repeating source makes the
 	 * session keys predictable, so the agent checks it once at start and refuses to talk
-	 * to the network service if it is not varying.
+	 * to the network service if it is not varying. The two samples come from two separate
+	 * opens: a fixed file hands out the next bytes on one descriptor (so two reads differ),
+	 * but starts again from the beginning on every open, while a real source never repeats.
 	 */
 	bool entropy_ok()
 	{
 		unsigned char a[32] = { }, b[32] = { };
+
 		int fd = open("/dev/random", O_RDONLY);
 		if (fd < 0) return false;
 		ssize_t const na = read(fd, a, sizeof(a));
+		close(fd);
+
+		fd = open("/dev/random", O_RDONLY);
+		if (fd < 0) return false;
 		ssize_t const nb = read(fd, b, sizeof(b));
 		close(fd);
+
 		if (na != (ssize_t)sizeof(a) || nb != (ssize_t)sizeof(b)) return false;
-		bool differ = false, varied = false;
-		for (unsigned i = 0; i < sizeof(a); i++) { if (a[i] != b[i]) differ = true; if (a[i] != a[0]) varied = true; }
-		return differ && varied;
+
+		bool varied = false;
+		for (unsigned i = 0; i < sizeof(a); i++) if (a[i] != a[0]) varied = true;
+		return varied && memcmp(a, b, sizeof(a)) != 0;
+	}
+
+	/*
+	 * An API key is one token of URL-safe characters. Anything else (a placeholder sentence, a
+	 * file with spaces or control characters) is not a key and must never be sent as a bearer
+	 * credential.
+	 */
+	bool key_plausible(std::string const &k)
+	{
+		if (k.size() < 16 || k.size() > 256) return false;
+		for (char const ch : k) {
+			bool const ok = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+			                (ch >= '0' && ch <= '9') || ch == '-' || ch == '_' || ch == '.';
+			if (!ok) return false;
+		}
+		return true;
+	}
+
+	/*
+	 * Text for the log: control characters replaced, length limited. Prompts are private and
+	 * replies are untrusted, so the log only gets a short, printable excerpt and the length.
+	 */
+	std::string log_safe(std::string const &in, size_t max = 80)
+	{
+		std::string out;
+		for (size_t i = 0; i < in.size() && out.size() < max; i++) {
+			unsigned char const c = static_cast<unsigned char>(in[i]);
+			out += (c < 0x20 || c == 0x7f) ? '?' : static_cast<char>(c);
+		}
+		if (in.size() > max) out += "...";
+		return out;
 	}
 
 	/* libcurl write callback: accumulate the body into a std::string */
@@ -255,9 +295,10 @@ void Libc::Component::construct(Libc::Env &env)
 		/* load the DeepSeek API key from the VFS (mounted by the run script) */
 		std::string api_key = read_file("/ai/mykee.key");
 		trim(api_key);
-		printf(api_key.empty()
-		       ? "HermOS: WARNING: no API key at /ai/mykee.key\n"
-		       : "HermOS: API key loaded from /ai/mykee.key\n");
+		bool const key_ok = key_plausible(api_key);
+		if (!key_ok) api_key.clear();
+		printf(key_ok ? "HermOS: API key loaded from /ai/mykee.key\n"
+		              : "HermOS: WARNING: no usable API key at /ai/mykee.key (empty or not a key)\n");
 
 		bool const rng_ok = entropy_ok();
 		printf(rng_ok ? "HermOS: entropy source OK\n"
@@ -281,12 +322,12 @@ void Libc::Component::construct(Libc::Env &env)
 				last = xml;
 
 				std::string const prompt = extract_prompt(xml);
-				printf("HermOS: prompt received: [%s]\n", prompt.c_str());
+				printf("HermOS: prompt received (%u bytes): [%s]\n", (unsigned)prompt.size(), log_safe(prompt).c_str());
 
 				std::string const ai = !rng_ok         ? "error: no entropy source; the agent will not open a TLS connection"
 				                     : api_key.empty() ? "error: no API key in this image (see HERMOS_MYKEE_KEY_FILE)"
 				                     :                   deepseek_call(prompt, api_key);
-				printf("HermOS: AI response: [%s]\n", ai.c_str());
+				printf("HermOS: AI response (%u bytes): [%s]\n", (unsigned)ai.size(), log_safe(ai).c_str());
 
 				write_file("/ai/ai_command", ai);
 			}

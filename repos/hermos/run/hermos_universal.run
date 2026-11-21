@@ -44,7 +44,7 @@ build {
 	app/hermos_files
 	lib/stdcxx lib/libc lib/vfs lib/libm
 	lib/libpng lib/blit lib/file
-	server/nic_router driver/nic lib/vfs_lwip lib/curl lib/libssh lib/libssl lib/libcrypto lib/zlib
+	server/nic_router driver/nic lib/vfs_lwip lib/vfs_jitterentropy lib/curl lib/libssh lib/libssl lib/libcrypto lib/zlib
 	server/event_to_input server/report_rom timer
 	driver/rtc
 	driver/ahci
@@ -191,16 +191,19 @@ config
         + log
         + null
         + rtc
-        + inline random | : 0123456789012345678901234567890123456789
+        + jitterentropy | name: random
       + dir socket
         + lwip | dhcp: yes
       + dir pipe
         + pipe
       + dir ui
         + rom | name: ui_intent | label: ui_intent | binary: no
+      + dir etc
+        + dir ssl
+          + rom | name: ca-bundle.crt
       + dir ai
         + report | name: ai_command | label: ai_command | buffer: 4096
-        + inline mykee.key | :  (no key committed: use the monolith image, which takes HERMOS_MYKEE_KEY_FILE)
+        + rom | name: mykee.key
 
 + start apps | caps: 6000 | ram: 300M
   + binary init
@@ -455,7 +458,29 @@ exec cp $asset_dir/apps.registry bin/registry
 exec cp $asset_dir/files_menu.xml bin/files_menu
 exec cp [genode_dir]/repos/hermos/src/app/theme_engine/theme.hid bin/theme.hid
 
-set boot_modules [list {*}[build_artifacts] hermos_drivers.config hermos_terminal.config Roboto-Regular.ttf icon_search.png icon_folder.png icon_mic.png icon_user.png icon_terminal.png icon_close.png icon_minimize.png icon_pause.png wallpaper.png logo.png icon_leaf.png registry files_menu menu_view_style.tar theme.hid hermos-system.img]
+#
+# Secrets and trust roots are build inputs, never committed:
+#  - the AI service key comes from the file named by HERMOS_MYKEE_KEY_FILE (empty = no AI);
+#  - the TLS trust store is a CA bundle (HERMOS_CA_BUNDLE, default: the build host's), because
+#    the agent verifies the server certificate of the AI service.
+#
+set key_src ""
+if {[info exists ::env(HERMOS_MYKEE_KEY_FILE)]} { set key_src $::env(HERMOS_MYKEE_KEY_FILE) }
+if {$key_src ne "" && [file exists $key_src]} {
+	exec cp $key_src bin/mykee.key
+} else {
+	puts "NOTE: HERMOS_MYKEE_KEY_FILE not set: the image has no AI key (the agent will report that)"
+	set kfd [open bin/mykee.key "WRONLY CREAT TRUNC"]; puts $kfd ""; close $kfd
+}
+set ca_src "/etc/ssl/certs/ca-certificates.crt"
+if {[info exists ::env(HERMOS_CA_BUNDLE)]} { set ca_src $::env(HERMOS_CA_BUNDLE) }
+if {![file exists $ca_src]} {
+	puts stderr "ERROR: no CA bundle at $ca_src (set HERMOS_CA_BUNDLE); TLS verification needs one"
+	exit 1
+}
+exec cp $ca_src bin/ca-bundle.crt
+
+set boot_modules [list {*}[build_artifacts] hermos_drivers.config hermos_terminal.config Roboto-Regular.ttf icon_search.png icon_folder.png icon_mic.png icon_user.png icon_terminal.png icon_close.png icon_minimize.png icon_pause.png wallpaper.png logo.png icon_leaf.png registry files_menu menu_view_style.tar theme.hid ca-bundle.crt mykee.key hermos-system.img]
 build_boot_image $boot_modules
 
 if {[cmd_arg --hermos-build-only no] eq "yes"} {
