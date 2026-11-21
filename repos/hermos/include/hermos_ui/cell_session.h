@@ -16,6 +16,7 @@
 
 #include <base/attached_ram_dataspace.h>
 #include <base/heap.h>
+#include <base/ram_allocator.h>
 #include <base/session_object.h>
 #include <base/signal.h>
 #include <root/component.h>
@@ -132,6 +133,18 @@ namespace Hermos {
 			Env        &_env;
 			Signal_context_capability _render_sigh;
 
+			/*
+			 * The framebuffer is paid for from the client's session quota,
+			 * not from the desktop's own RAM, so a client asking for a huge
+			 * mode can only exhaust its own quota. Must be declared before
+			 * '_fb_ds' so it outlives the buffer.
+			 */
+			Accounted_ram_allocator _ram { _env.ram(), _ram_quota_guard(),
+			                               _cap_quota_guard() };
+
+			/* largest accepted framebuffer edge, also keeps size math from overflowing */
+			enum { MAX_FB_DIM = 8192 };
+
 			Constructible<Attached_ram_dataspace> _fb_ds { };
 			size_t           _fb_bytes { 0 };
 			Framebuffer::Mode _mode { { 0, 0 }, false };
@@ -172,16 +185,15 @@ namespace Hermos {
 					Signal_transmitter(_render_sigh).submit();
 			}
 
+			/*
+			 * The buffer is allocated in 'buffer()', together with the mode
+			 * change. Allocating it lazily here used to let '_mode' run ahead
+			 * of the buffer, so the compositor read past its end.
+			 */
 			Dataspace_capability _fb_dataspace()
 			{
-				size_t const bytes = Gui::Session::ram_quota(_mode);
-				if (bytes == 0)
+				if (!_fb_ds.constructed())
 					return Dataspace_capability();
-
-				if (!_fb_ds.constructed() || _fb_bytes != bytes) {
-					_fb_ds.construct(_env.ram(), _env.rm(), bytes);
-					_fb_bytes = bytes;
-				}
 				return _fb_ds->cap();
 			}
 
@@ -203,7 +215,12 @@ namespace Hermos {
 			Session_label label() const { return _label; }
 
 			/* accessors for the desktop compositor */
-			bool fb_valid() const { return _fb_ds.constructed() && _mode.area.count() > 0; }
+			bool fb_valid() const
+			{
+				/* never let the compositor read more pixels than the buffer holds */
+				return _fb_ds.constructed() && _mode.area.count() > 0
+				    && _fb_bytes >= _mode.area.count() * sizeof(Pixel);
+			}
 			int  fb_w() const { return int(_mode.area.w); }
 			int  fb_h() const { return int(_mode.area.h); }
 			Pixel const *fb_pixels() const { return _fb_ds->local_addr<Pixel const>(); }
@@ -301,7 +318,33 @@ namespace Hermos {
 
 			Buffer_result buffer(Framebuffer::Mode mode) override
 			{
-				_mode = mode;
+				if (mode.area.w > MAX_FB_DIM || mode.area.h > MAX_FB_DIM) {
+					warning("HermOS cell: clamping buffer ", mode.area, " of '", _label, "'");
+					mode.area = Area(min(mode.area.w, unsigned(MAX_FB_DIM)),
+					                 min(mode.area.h, unsigned(MAX_FB_DIM)));
+				}
+
+				size_t const needed = align_addr(Gui::Session::ram_quota(mode), AT_PAGE);
+
+				/* same check as nitpicker: the old buffer's quota comes back on release */
+				if (_fb_bytes + _ram_quota_guard().avail().value < needed)
+					return Buffer_result::OUT_OF_RAM;
+				if (_cap_quota_guard().avail().value < 1)
+					return Buffer_result::OUT_OF_CAPS;
+
+				/* release the old buffer first, so mode and buffer always match */
+				if (_fb_ds.constructed()) _fb_ds.destruct();
+				_fb_bytes = 0;
+				_mode     = Framebuffer::Mode { };
+
+				if (needed) {
+					try { _fb_ds.construct(_ram, _env.rm(), needed); }
+					catch (Out_of_ram)  { return Buffer_result::OUT_OF_RAM;  }
+					catch (Out_of_caps) { return Buffer_result::OUT_OF_CAPS; }
+					_fb_bytes = needed;
+					_mode     = mode;
+				}
+
 				log("HermOS cell: buffer ", _mode.area.w, "x", _mode.area.h);
 				_notify();
 				return Buffer_result::OK;
@@ -376,18 +419,6 @@ namespace Hermos {
 	};
 
 
-	/* simple substring scan (Genode base has no strstr) */
-	static bool _contains(char const *haystack, char const *needle)
-	{
-		for (char const *p = haystack; *p; ++p) {
-			char const *a = p, *b = needle;
-			while (*a && *b && *a == *b) { ++a; ++b; }
-			if (!*b) return true;
-		}
-		return false;
-	}
-
-
 	/* Root of the "Gui" service; places each client into a Cell slot */
 	struct Cell_root : Root_component<Cell_session>
 	{
@@ -409,17 +440,51 @@ namespace Hermos {
 			_env(env), _render_sigh(sigh)
 		{ }
 
-		/* slot number from a label like "apps -> files3 -> files"; -1 if there is none */
-		static int _slot_from_label(char const *p)
+		/*
+		 * The part of a session label the client cannot choose. Init puts the
+		 * child name first, and the desktop names the children of its "apps"
+		 * init itself, so "apps -> term2 -> x" gives "term2" and
+		 * "agents_sidebar" gives "agents_sidebar". Everything after that
+		 * segment is chosen by the client and must never decide placement
+		 * or privileges.
+		 */
+		static String<64> _trusted_name(Session_label const &label)
+		{
+			auto segment_len = [] (char const *s) {
+				size_t n = 0;
+				while (s[n] && Genode::strcmp(s + n, " -> ", 4) != 0) n++;
+				return n;
+			};
+
+			char const *p = label.string();
+			size_t      n = segment_len(p);
+			if (n == 4 && Genode::strcmp(p, "apps -> ", 8) == 0) {
+				p += 8;
+				n  = segment_len(p);
+			}
+			return String<64>(Cstring(p, n));
+		}
+
+		/*
+		 * Cell number from a trusted child name: term<N>, files<N> or app<N>,
+		 * where <N> is the whole rest of the name. -1 for anything else.
+		 */
+		static int _slot_from_name(String<64> const &name)
 		{
 			static char const *const prefixes[] = { "term", "files", "app" };
-			for (char const *q = p; *q; ++q) {
-				if (q != p && q[-1] != ' ') continue;          /* only at the start of a label segment */
-				for (char const *pre : prefixes) {
-					char const *a = pre, *b = q;
-					while (*a && *a == *b) { ++a; ++b; }
-					if (!*a && *b >= '0' && *b <= '9') return *b - '0';
+			char const *const p = name.string();
+			for (char const *pre : prefixes) {
+				size_t const len = Genode::strlen(pre);
+				if (Genode::strcmp(p, pre, len) != 0) continue;
+				char const *d = p + len;
+				if (!*d) return -1;
+				int n = 0;
+				for (; *d; ++d) {
+					if (*d < '0' || *d > '9') return -1;
+					n = n * 10 + (*d - '0');
+					if (n >= Cell_manager::MAX_CELLS) return -1;
 				}
+				return n;
 			}
 			return -1;
 		}
@@ -430,21 +495,19 @@ namespace Hermos {
 				_env, session_resources_from_args(args),
 				session_label_from_args(args), _render_sigh };
 
-			/* the sidebar pins itself to the theme rectangle */
-			{
-				Session_label const label = s.label();
-				char const *const p = label.string();
-				if (_contains(p, "agents_sidebar")) {
-					_sidebar_session = &s;
-					log("HermOS: agents_sidebar session connected");
-					return s;
-				}
+			String<64> const name = _trusted_name(s.label());
+
+			/* the sidebar pins itself to the theme rectangle (only one, never replaced) */
+			if (name == "agents_sidebar" && !_sidebar_session) {
+				_sidebar_session = &s;
+				log("HermOS: agents_sidebar session connected");
+				return s;
 			}
 
 			/* The desktop decides which Cell an app gets and encodes it in the child
 			 * name it starts the app under: term<N>, files<N>, app<N>. The Gui server
 			 * honours that number instead of guessing from the connect order. */
-			int const preferred = _slot_from_label(s.label().string());
+			int const preferred = _slot_from_name(name);
 
 			int const idx = _cells.attach(s, preferred);
 			if (idx < 0)
@@ -452,6 +515,18 @@ namespace Hermos {
 			else
 				log("HermOS: Cell ", idx, " hosting '", s.label().string(), "'");
 			return s;
+		}
+
+		/*
+		 * A client pays for its framebuffer by upgrading its session quota (Gui::Connection::buffer
+		 * does so before asking for the mode). The framebuffer is charged to that quota, so the
+		 * upgrade must reach the session, as nitpicker does; with the default (ignore) every
+		 * buffer request would fail with OUT_OF_RAM and the client would retry forever.
+		 */
+		void _upgrade_session(Cell_session &s, char const *args) override
+		{
+			s.upgrade(ram_quota_from_args(args));
+			s.upgrade(cap_quota_from_args(args));
 		}
 
 		void _destroy_session(Cell_session &s) override

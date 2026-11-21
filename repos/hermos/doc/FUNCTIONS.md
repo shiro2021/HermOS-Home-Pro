@@ -93,8 +93,9 @@ function carries one of these marks:
 | Function | State | Notes |
 |---|---|---|
 | Network stack (NIC → NAT router → agent, 10.0.3.0/24) | VERIFIED | DHCP lease and agent interface up in QEMU. |
+| Hermes agent TLS: server certificate and host name verified against a CA bundle in the image; real entropy (`jitterentropy`) with a start-up self-check; https only; 1 MiB reply cap | BUILT | Build input `HERMOS_CA_BUNDLE` (default: the build host's `/etc/ssl/certs/ca-certificates.crt`). Before this, verification was off and `/dev/random` was a constant string. Not exercised against the real service (no DNS on the test host); needs a correct clock (RTC). |
 | Hermes agent: prompt → DeepSeek chat API → reply panel | PARTIAL | Verified: search field → agent → outgoing request → reply panel. The test host has no DNS, so the reply was "curl failed: Couldn't resolve host name". A real answer is untested. |
-| MyKee key handling | BUILT | **A key string is embedded in `run/hermos_monolith.run`; rotate it if it is real.** |
+| MyKee key handling | BUILT | The key is no longer in the repository: the build copies the file named by `HERMOS_MYKEE_KEY_FILE` into the image (empty = no AI; the agent says so). **The previously committed key is still in git history: rotate it.** |
 | Agent HTTP status page on port 80 | BUILT | Listens (logged). The router has no forward for it, so it is reachable only from inside. |
 | Hermes Core Director, workers, procedure registry | SOURCE ONLY | Part of `hermos_desktop.run`, not the V5 image. |
 | Nitpicker shell, installer UI/executor, test clients | SOURCE ONLY | Same. |
@@ -126,6 +127,10 @@ function carries one of these marks:
 | Function | State | Notes |
 |---|---|---|
 | Genode capability isolation between components | VERIFIED | Each component only gets routed services. |
+| Gui framebuffers charged to the client's session quota; mode clamped to 8192×8192; buffer and mode change together | VERIFIED | Clients upgrade their quota (`Gui::Connection::buffer`); the server passes upgrades to the session. |
+| Cell placement and sidebar privilege taken only from the child name the desktop controls | VERIFIED | `term<N>` / `files<N>` / `app<N>` must match the whole name. |
+| Hermes director snapshots the shared request before validating it | BUILT | The director is not part of the V5 image. |
+| Agent HTTP page: time-limited reads, control characters stripped from the log, lists only what runs | BUILT | |
 | Explicit approval of consequential agent actions | ABSENT | |
 | Audit log | ABSENT | Only the serial/kernel log. |
 | Users, passwords, permissions | ABSENT | |
@@ -138,4 +143,4 @@ function carries one of these marks:
 2. "Hermes Agent: Ready" does not reflect the agent's real state.
 3. `hermes_files` and `desktop_builder` needed `exec_static_constructors()`
    (fixed for both); other components were not checked for the same fault.
-4. An API-key-looking string is committed in a run script.
+4. ~~An API-key-looking string is committed in a run script.~~ Removed from the tree; it remains in git history, so the key must be rotated.

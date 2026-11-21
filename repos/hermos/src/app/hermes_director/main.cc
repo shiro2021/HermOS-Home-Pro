@@ -395,7 +395,14 @@ namespace Hermos {
 				return INVALID;
 			}
 
-			Request const &in = *_request.local_addr<Request>();
+			/*
+			 * The request dataspace stays mapped in the client, which can
+			 * rewrite it at any time, including between our checks and our
+			 * use of the fields. Take a private snapshot first and validate
+			 * and act only on that copy, never on the shared memory.
+			 */
+			Request in;
+			Genode::memcpy(&in, _request.local_addr<Request>(), sizeof(Request));
 
 			/* Bounded, null-terminated strings only. */
 			if (in.abi_version != ABI_VERSION || !in.task_id ||

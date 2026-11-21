@@ -24,6 +24,7 @@
 #include <string>
 
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
@@ -81,10 +82,31 @@ namespace {
 		return xml;
 	}
 
+	/*
+	 * TLS draws its randomness from /dev/random. A constant or repeating source makes the
+	 * session keys predictable, so the agent checks it once at start and refuses to talk
+	 * to the network service if it is not varying.
+	 */
+	bool entropy_ok()
+	{
+		unsigned char a[32] = { }, b[32] = { };
+		int fd = open("/dev/random", O_RDONLY);
+		if (fd < 0) return false;
+		ssize_t const na = read(fd, a, sizeof(a));
+		ssize_t const nb = read(fd, b, sizeof(b));
+		close(fd);
+		if (na != (ssize_t)sizeof(a) || nb != (ssize_t)sizeof(b)) return false;
+		bool differ = false, varied = false;
+		for (unsigned i = 0; i < sizeof(a); i++) { if (a[i] != b[i]) differ = true; if (a[i] != a[0]) varied = true; }
+		return differ && varied;
+	}
+
 	/* libcurl write callback: accumulate the body into a std::string */
 	size_t write_cb(char *ptr, size_t size, size_t nmemb, void *userdata)
 	{
 		auto *out = static_cast<std::string *>(userdata);
+		enum { MAX_BODY = 1 << 20 };               /* a reply never needs more than 1 MiB */
+		if (out->size() + size * nmemb > MAX_BODY) return 0;   /* aborts the transfer */
 		out->append(ptr, size * nmemb);
 		return size * nmemb;
 	}
@@ -120,8 +142,17 @@ namespace {
 		curl_easy_setopt(c, CURLOPT_POSTFIELDS, body.c_str());
 		curl_easy_setopt(c, CURLOPT_POSTFIELDSIZE, static_cast<long>(body.size()));
 		curl_easy_setopt(c, CURLOPT_HTTPHEADER, headers);
-		curl_easy_setopt(c, CURLOPT_SSL_VERIFYPEER, 0L);
-		curl_easy_setopt(c, CURLOPT_SSL_VERIFYHOST, 0L);
+		/*
+		 * The request carries the API key and the user's prompt: the server certificate must
+		 * be verified (chain to the CA bundle in the image, host name matches), or anyone on the
+		 * network path could read or alter both. No fallback to an unverified connection.
+		 */
+		curl_easy_setopt(c, CURLOPT_SSL_VERIFYPEER, 1L);
+		curl_easy_setopt(c, CURLOPT_SSL_VERIFYHOST, 2L);
+		curl_easy_setopt(c, CURLOPT_CAINFO, "/etc/ssl/ca-bundle.crt");
+		curl_easy_setopt(c, CURLOPT_PROTOCOLS_STR, "https");
+		curl_easy_setopt(c, CURLOPT_REDIR_PROTOCOLS_STR, "https");
+		curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 0L);
 		curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, write_cb);
 		curl_easy_setopt(c, CURLOPT_WRITEDATA, &response);
 		curl_easy_setopt(c, CURLOPT_TIMEOUT, 30L);
@@ -179,24 +210,25 @@ static void httpd_tick()
 	if (httpd_fd < 0) return;
 	int c = accept(httpd_fd, nullptr, nullptr);
 	if (c < 0) return;   /* EAGAIN or error */
+	/* a client that connects and says nothing must not stall the agent's loop */
+	struct timeval const tv = { 0, 200 * 1000 };
+	setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 	char req[1024];
 	ssize_t n = read(c, req, sizeof(req) - 1);
 	if (n > 0) {
 		req[n] = 0;
-		printf("HermOS httpd: request: %s\n", req);
 		char method[16] = {0}, path[256] = {0};
 		sscanf(req, "%15s %255s", method, path);
+		for (char *p = path; *p; ++p) if (*p < 0x20 || *p > 0x7e) *p = '?';   /* no control characters in the log */
+		printf("HermOS httpd: %s %s\n", method, path);
 		static char const body[] =
 			"<!DOCTYPE html><html><head><title>HermOS Server</title></head>"
 			"<body style=\"background:#0a0c10;color:#e8eaf0;font-family:sans-serif\">"
 			"<h1>HermOS Server</h1>"
 			"<p>Status: <b>RUNNING</b></p><p>Edition: Server</p>"
 			"<p>Kernel: NOVA / Genode 26.08</p>"
-			"<h2>Services</h2><ul>"
-			"<li>hermes-httpd :80 running</li>"
-			"<li>reverse-proxy :443 running</li>"
-			"<li>hermes-director :9000 running</li>"
-			"<li>metrics :9100 stopped</li>"
+			"<p>Only what runs here is listed.</p><ul>"
+			"<li>hermes-httpd :80 (this page)</li>"
 			"</ul><p>served by hermes_agent_cpp over lwIP</p>"
 			"</body></html>";
 		char resp[4096];
@@ -227,6 +259,10 @@ void Libc::Component::construct(Libc::Env &env)
 		       ? "HermOS: WARNING: no API key at /ai/mykee.key\n"
 		       : "HermOS: API key loaded from /ai/mykee.key\n");
 
+		bool const rng_ok = entropy_ok();
+		printf(rng_ok ? "HermOS: entropy source OK\n"
+		              : "HermOS: ERROR: /dev/random is not random; refusing to use the network service\n");
+
 		printf("HermOS hermes_agent_cpp: waiting for ui_intent...\n");
 
 	httpd_init();
@@ -247,7 +283,9 @@ void Libc::Component::construct(Libc::Env &env)
 				std::string const prompt = extract_prompt(xml);
 				printf("HermOS: prompt received: [%s]\n", prompt.c_str());
 
-				std::string const ai = deepseek_call(prompt, api_key);
+				std::string const ai = !rng_ok         ? "error: no entropy source; the agent will not open a TLS connection"
+				                     : api_key.empty() ? "error: no API key in this image (see HERMOS_MYKEE_KEY_FILE)"
+				                     :                   deepseek_call(prompt, api_key);
 				printf("HermOS: AI response: [%s]\n", ai.c_str());
 
 				write_file("/ai/ai_command", ai);

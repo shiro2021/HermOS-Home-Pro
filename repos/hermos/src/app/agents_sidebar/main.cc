@@ -68,8 +68,10 @@ namespace Agents_sidebar {
 
 		Main(Env &env) : _env(env)
 		{
-			/* set the buffer mode, then fetch the dataspace sized by it */
-			_client.buffer({ { PANEL_W, PANEL_H }, false });
+			/* set the buffer mode, then fetch the dataspace sized by it. The Connection's
+			 * buffer() first upgrades this session's quota: the server charges the buffer to
+			 * the client, so a bare Session_client::buffer() would be refused (OUT_OF_RAM). */
+			_gui.buffer({ { PANEL_W, PANEL_H }, false });
 
 			_gui.view(_view_id,
 			          { .title = Gui::Title("Agents & Workers"),

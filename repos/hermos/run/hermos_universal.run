@@ -200,7 +200,7 @@ config
         + rom | name: ui_intent | label: ui_intent | binary: no
       + dir ai
         + report | name: ai_command | label: ai_command | buffer: 4096
-        + inline mykee.key | : sk-0dc7c44723d84f30a4f390170e0ab4d3
+        + inline mykee.key | :  (no key committed: use the monolith image, which takes HERMOS_MYKEE_KEY_FILE)
 
 + start apps | caps: 6000 | ram: 300M
   + binary init
