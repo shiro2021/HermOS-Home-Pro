@@ -46,11 +46,11 @@ build {
 	driver/rtc
 	driver/ahci
 	driver/nvme
-	server/part_block lib/vfs_rump
+	server/part_block lib/vfs_rump server/tar_rom
 	test/nitpicker
 }
 
-install_config {
+set hermos_config {
 config
 + parent-provides
   + service ROM
@@ -106,11 +106,12 @@ config
     + service Uplink
   + config | verbose_domain_state: yes
     + policy | label_prefix: hermes_agent | domain: downlink
+@BROWSER_NIC@
     + policy | label_prefix: drivers | domain: uplink
     + domain uplink
       + nat | domain: downlink | tcp-ports: 16384 | udp-ports: 16384 | icmp-ids: 16384
     + domain downlink | interface: 10.0.3.1/24
-      + dhcp-server | ip_first: 10.0.3.2 | ip_last: 10.0.3.2 | dns_config_from: uplink
+      + dhcp-server | ip_first: 10.0.3.2 | ip_last: 10.0.3.9 | dns_config_from: uplink
       + tcp | dst: 0.0.0.0/0 | + permit-any | domain: uplink
       + udp | dst: 0.0.0.0/0 | + permit-any | domain: uplink
       + icmp | dst: 0.0.0.0/0 | domain: uplink
@@ -125,6 +126,7 @@ config
   + config | verbose: yes
     + policy | label: apps -> config | report: desktop_builder -> apps
     + policy | label: apps -> state  | report: apps -> state
+@BROWSER_REPORT@
     + policy | label: hermes_agent -> ui_intent     | report: desktop_builder -> ui_intent
     + policy | label: desktop_builder -> ai_command | report: hermes_agent -> ai_command
     + policy | label: desktop_builder -> theme_state | report: desktop_builder -> theme_state
@@ -159,7 +161,7 @@ config
     + service Timer       | + child timer
     + service Block       | + child drivers
     + any-service         | + parent
-  + config
+  + config@DESKTOP_PREVIEW@
     + vfs
       + dir dev
         + log
@@ -230,8 +232,81 @@ config
     + service Gui | + child desktop_builder
     + service Rtc | + child pc_rtc
     + any-service | + parent
+@BROWSER_CHILD@
 -
 }
+
+#
+# The HermOS Browser (optional while it is being brought up): with --hermos-browser-dir DIR (the output of
+# tools/hermos-browser/assemble-modules.sh) its program and libraries become boot modules and it starts as the
+# LAST top-level child. Its RAM is deliberately oversized: init gives a child whose quota exceeds what is left
+# all of the remainder, so the browser takes what the machine can spare instead of a number picked here.
+# The child is named app2: the Gui server places a client in the Cell whose number is in its child name.
+#
+set browser_dir [cmd_arg --hermos-browser-dir ""]
+set browser_child ""
+set browser_nic ""
+set browser_report ""
+set desktop_preview ""
+if {$browser_dir ne ""} {
+	set desktop_preview " | preview: yes"
+	set browser_nic "    + policy | label_prefix: app2 | domain: downlink"
+	set browser_report "    + policy | label: app2 -> shape | report: app2 -> shape"
+	set browser_child {
++ start browser_rom | caps: 200 | ram: 900M
+  + binary tar_rom
+  + provides | + service ROM
+  + config | + archive | name: browser.tar
+  + route
+    + service ROM | label: browser.tar | + parent
+    + any-service | + parent
+
++ start app2 | caps: 10000 | ram: 64G
+  + binary hermos_browser
+  + route
+    + service Nic   | + child nic_router
+    + service Gui   | + child desktop_builder
+    + service Rtc   | + child pc_rtc
+    + service Timer | + child timer
+    + service Report | + child report_rom
+    + service ROM | + child browser_rom
+    + any-service | + parent
+  + config
+    + vfs
+      + dir dev
+        + dir pipe
+          + pipe
+        + log
+        + jitterentropy | name: entropy
+        + xoroshiro | name: random  | seed_path: /dev/entropy
+        + xoroshiro | name: urandom | seed_path: /dev/entropy
+        + rtc
+      + dir shm
+        + qtwebengine_shm
+      + dir socket
+        + lwip | dhcp: yes
+      + dir tmp
+        + ram
+      + dir .config
+        + ram
+      + dir downloads
+        + ram
+      + tar | name: qt6_dejavusans.tar
+      + tar | name: qt6_libqgenode.tar
+      + tar | name: qt6_libqjpeg.tar
+      + tar | name: qt6_libqsqlite.tar
+      + tar | name: qt6_webengine_resources.tar
+      + tar | name: qt6_webengine_translations.tar
+      + ram
+    + libc | stdout: /dev/log | stderr: /dev/log | pipe: /dev/pipe | rtc: /dev/rtc | socket: /socket | pid: 1
+      + mmap | align_log2: 21
+    + arg | value: hermos_browser
+    + env | name: QTWEBENGINE_CHROMIUM_FLAGS | value: --single-process --no-sandbox --disable-gpu --disable-gpu-shader-disk-cache --disable-dev-shm-usage
+    + env | name: QT_QPA_PLATFORM | value: genode
+}
+}
+install_config [string map [list @BROWSER_CHILD@ $browser_child @BROWSER_NIC@ $browser_nic \
+                                 @BROWSER_REPORT@ $browser_report @DESKTOP_PREVIEW@ $desktop_preview] $hermos_config]
 
 #
 # drivers subsystem: the interactive driver stack without block/network.
@@ -497,6 +572,15 @@ if {![file exists $ca_src]} {
 exec cp $ca_src bin/ca-bundle.crt
 
 set boot_modules [list {*}[build_artifacts] hermos_drivers.config hermos_terminal.config Roboto-Regular.ttf Inter-Regular.ttf Inter-Medium.ttf Inter-SemiBold.ttf compass.png hydro_thumb.png hydro_big.png icon_search.png icon_folder.png icon_mic.png icon_user.png icon_terminal.png icon_close.png icon_minimize.png icon_pause.png wallpaper.png logo.png icon_leaf.png registry files_menu menu_view_style.tar theme.hid ca-bundle.crt mykee.key hermos-system.img]
+
+# the browser's files (only when given)
+if {$browser_dir ne ""} {
+	foreach f [lsort [glob -directory $browser_dir *]] {
+		set n [file tail $f]
+		exec cp -f $f bin/$n
+		lappend boot_modules $n
+	}
+}
 build_boot_image $boot_modules
 
 if {[cmd_arg --hermos-build-only no] eq "yes"} {

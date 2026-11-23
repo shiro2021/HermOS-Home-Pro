@@ -1,0 +1,6 @@
+<RCC>
+  <qresource prefix="/">
+    <file>blocklist.txt</file>
+    <file>start.html</file>
+  </qresource>
+</RCC>

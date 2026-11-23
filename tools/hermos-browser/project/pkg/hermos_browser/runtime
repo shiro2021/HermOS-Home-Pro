@@ -1,0 +1,54 @@
+<runtime ram="1G" caps="10000" binary="hermos_browser">
+
+	<requires>
+		<nic/>
+		<gui/>
+		<rom label="mesa_gpu.lib.so"/>
+		<gpu/>
+		<rtc/>
+		<report label="shape"/>
+		<report label="clipboard"/>
+		<rom label="clipboard"/>
+		<rm/>
+	</requires>
+
+	<config clipboard="yes">
+		<vfs>
+			<dir name="dev">
+				<dir name="pipe"> <pipe/> </dir>
+				<log/>
+				<jitterentropy name="entropy"/>
+				<xoroshiro name="random"  seed_path="/dev/entropy"/>
+				<xoroshiro name="urandom" seed_path="/dev/entropy"/>
+				<rtc/>
+				<gpu/>
+			</dir>
+			<dir name="shm"> <qtwebengine_shm/> </dir>
+			<dir name="socket"> <lwip dhcp="yes"/> </dir>
+			<!-- everything the browser writes lives in RAM and is gone when the Cell closes -->
+			<dir name="tmp"> <ram/> </dir>
+			<dir name=".config"> <ram/> </dir>
+			<dir name="downloads"> <ram/> </dir>
+			<tar name="qt6_dejavusans.tar"/>
+			<tar name="qt6_libqgenode.tar"/>
+			<tar name="qt6_webengine_resources.tar"/>
+			<tar name="qt6_webengine_translations.tar"/>
+			<ram/>
+		</vfs>
+		<libc stdout="/dev/log" stderr="/dev/log" pipe="/dev/pipe" rtc="/dev/rtc" socket="/socket" pid="1">
+			<mmap align_log2="21"/>
+		</libc>
+		<arg value="hermos_browser"/>
+		<arg value="--webEngineArgs"/>
+		<arg value="--single-process"/>
+		<arg value="--no-sandbox"/>
+		<arg value="--disable-gpu-compositing"/>
+		<arg value="--disable-gpu-shader-disk-cache"/>
+		<env name="QT_QUICK_BACKEND" value="software"/>
+	</config>
+
+	<content>
+		<rom label="hermos_browser"/>
+	</content>
+
+</runtime>

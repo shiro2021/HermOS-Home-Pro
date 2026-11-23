@@ -88,7 +88,8 @@ function carries one of these marks:
 | Files: format converter | STUB | Codecs are placeholders. |
 | Files: SSH/SFTP | STUB | Logs "stub". |
 | Files: "Analyze" (AI parser hot-load) | STUB | |
-| Web browser, media player, office, settings app | ABSENT | |
+| Web browser: HermOS Browser (smart bar, disposable profile, HTTPS-only Shield) | PARTIAL | `tools/hermos-browser`. The program builds and its logic is tested, and the image boots with it, but the depot's Qt/Chromium binaries were built for an earlier Genode release and do not run on 26.08 (see its README). Not part of the ISO. |
+| Media player, office, settings app | ABSENT | |
 
 ## 5. Hermes agent and network services
 

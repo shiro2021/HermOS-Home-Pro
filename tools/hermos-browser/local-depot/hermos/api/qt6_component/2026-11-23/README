@@ -1,0 +1,1 @@
+ABI symbols of Genode's qt6_component library (from the Genode libports repository), so Goa can link against it.
