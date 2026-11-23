@@ -1671,19 +1671,27 @@ namespace Hermos {
 		Cell_geom _quick_orig[NUM_CELLS] { };
 		int  _quick_rx { 0 }, _quick_ry { 0 }, _quick_rw { 0 }, _quick_rh { 0 };
 
-		/* the tiling region = the bounding box of the theme's slot grid */
+		/*
+		 * The work area Cells may use (Plasma clientArea()): the screen minus the struts of the
+		 * panels that are permanently shown, minus the right pane (and its slim bar). Maximise,
+		 * quick-tile and the edge snap all use this one rectangle, so a Cell never reaches under a panel.
+		 */
+		Cell_geom _work_area() const
+		{
+			Scene::Map const m = Scene::map_for(_w, _h);
+			Scene::Rect const area = Scene::client_area(
+				{ 0, 0, float(_w), float(_h) },
+				{ Scene::Edge::Left,   _sstate.left.mode,   _sstate.left.thickness * m.k,   _sstate.left.t,   _sstate.left.pinned,   false },
+				{ Scene::Edge::Bottom, _sstate.bottom.mode, _sstate.bottom.thickness * m.k, _sstate.bottom.t, _sstate.bottom.pinned, false });
+			return Cell_geom { int(area.x), int(area.y), int(area.w) - _sb_w_live(), int(area.h) - _dock_y_offset };
+		}
+
+		/* the tiling region = the work area */
 		void _tile_snapshot_region()
 		{
-			int x0 = 1 << 20, y0 = 1 << 20, x1 = 0, y1 = 0;
-			for (int i = 0; i < NUM_CELLS; ++i) {
-				Cell_geom const &g = _geom[i];
-				if (g.x < x0) x0 = g.x;
-				if (g.y < y0) y0 = g.y;
-				if (g.x + g.w > x1) x1 = g.x + g.w;
-				if (g.y + g.h > y1) y1 = g.y + g.h;
-			}
-			_tile_rx = x0; _tile_ry = y0;
-			_tile_rw = x1 - x0; _tile_rh = y1 - y0;
+			Cell_geom const wa = _work_area();
+			_tile_rx = wa.x; _tile_ry = wa.y;
+			_tile_rw = wa.w; _tile_rh = wa.h;
 		}
 
 		/* the master-stack: the focused Cell owns the master (the left 55%),
@@ -1764,6 +1772,8 @@ namespace Hermos {
 				_quick_snapped = true;
 			}
 
+			_tile_snapshot_region();
+			_quick_rx = _tile_rx; _quick_ry = _tile_ry; _quick_rw = _tile_rw; _quick_rh = _tile_rh;
 			int const rx = _quick_rx, ry = _quick_ry, rw = _quick_rw, rh = _quick_rh;
 			if (rw <= 0 || rh <= 0) return;
 			int const gap = 10;
@@ -1819,11 +1829,13 @@ namespace Hermos {
 		unsigned _glass_a   { 220 };
 		uint8_t _dock_r     {  46 }, _dock_g     {  50 }, _dock_b     {  56 };
 		int _sb_x { 901 }, _sb_y { 77 }, _sb_w { 102 }, _sb_h { 614 };
-		/* width the right pane takes right now (0 while it is hidden): Cells may use the space */
+		/* width the right group (pane or slim bar, plus the rail) takes right now: Cells keep clear of it */
 		int _sb_w_live() const
 		{
-			float const slim = _sstate.right_slim * float(_w) / Scene::DW;   /* the slim bar stays */
-			return int(float(_sb_w) * _sstate.right.t + slim * (1.0f - _sstate.right.t));
+			float const k    = float(_w) / Scene::DW;
+			float const slim = _sstate.right_slim * k;                      /* the slim bar stays */
+			float const rail = _sstate.right_rail * k;                      /* so does the rail beside it */
+			return int(float(_sb_w) * _sstate.right.t + slim * (1.0f - _sstate.right.t) + rail);
 		}
 
 		/* Step 3: the normalized snap slots from the theme_state report */
@@ -3157,23 +3169,21 @@ namespace Hermos {
 			 * normalized slot published by the theme engine. */
 			if (_drag_mode == DRAG_MOVE && _drag_cell >= 0) {
 				Cell_geom &g = _geom[_drag_cell];
-				int const scr_w  = (int)_fb.mode().area.w;
-				int const scr_h  = (int)_fb.mode().area.h;
-				int const work_h = scr_h - _dock_y_offset;
+				Cell_geom const wa = _work_area();            /* the edges are the work area's, not the screen's */
 
 				char const *match = nullptr;
-				if (g.x <= 20)               match = "left";
-				if (g.x + g.w >= scr_w - 20) match = "right";
+				if (g.x <= wa.x + 20)                match = "left";
+				if (g.x + g.w >= wa.x + wa.w - 20)   match = "right";
 
 				if (match) {
 					for (int i = 0; i < _snap_count; ++i) {
 						Snap_def const &s = _snaps[i];
 						if (!s.valid || Genode::strcmp(s.id, match) != 0)
 							continue;
-						g.x = s.x_pct * scr_w / 100;
-						g.y = 0;
-						g.w = s.w_pct * scr_w / 100;
-						g.h = work_h;
+						g.x = wa.x + s.x_pct * wa.w / 100;
+						g.y = wa.y;
+						g.w = s.w_pct * wa.w / 100;
+						g.h = wa.h;
 						log("HermOS: cell ", _drag_cell, " snapped to \"",
 						    match, "\" (normalized slot)");
 						break;
@@ -3663,15 +3673,7 @@ namespace Hermos {
 						_win_open[idx] = false;
 						log("HermOS cell ", idx, " minimized");
 					} else if (k == Scene::CTRL_MAX) {
-						/* Plasma clientArea(): the screen minus the struts of the
-						 * panels that are permanently shown, and the sidebar */
-						Scene::Rect const area = Scene::client_area(
-							{ 0, 0, float(_w), float(_h) },
-							{ Scene::Edge::Left,   _sstate.left.mode,   _sstate.left.thickness * m.k,   _sstate.left.t,   _sstate.left.pinned,   false },
-							{ Scene::Edge::Bottom, _sstate.bottom.mode, _sstate.bottom.thickness * m.k, _sstate.bottom.t, _sstate.bottom.pinned, false });
-						Cell_geom &g = _geom[idx];
-						g.x = int(area.x); g.y = int(area.y);
-						g.w = int(area.w) - _sb_w_live(); g.h = int(area.h) - _dock_y_offset;
+						_geom[idx] = _work_area();
 						log("HermOS cell ", idx, " maximized (client area)");
 					} else {   /* undo: back to the theme slot */
 						log("HermOS cell ", idx, " restore");
@@ -3925,6 +3927,7 @@ namespace Hermos {
 					panels.with_optional_sub_node("right",  [&] (Xml_node const &n) {
 						apply(_sstate.right, n);
 						_sstate.right_slim = float(n.attribute_value("slim", (unsigned long)_sstate.right_slim));
+						_sstate.right_rail = float(n.attribute_value("rail", (unsigned long)_sstate.right_rail));
 					});
 					_sstate.left.t   = _sstate.left.wants_shown()   ? 1.0f : 0.0f;
 					_sstate.bottom.t = _sstate.bottom.wants_shown() ? 1.0f : 0.0f;
@@ -4069,19 +4072,26 @@ namespace Hermos {
 				else if (_pointer_y >= _h - 10) _bottom_panel_visible = true;
 				else if (_pointer_y < _h - _panel_h) _bottom_panel_visible = false;
 
+				/* a shortcut belongs to the desktop: the app must not also receive its keys */
+				bool shortcut_consumed = false;
+
 				ev.handle_release([&] (Input::Keycode key) {
 					if (key == Input::BTN_LEFT) _drag_end();
-					if (key == Input::KEY_LEFTMETA || key == Input::KEY_RIGHTMETA)
+					if (key == Input::KEY_LEFTMETA || key == Input::KEY_RIGHTMETA) {
 						_meta_down = false;
+						shortcut_consumed = true;
+					}
 				});
 
 				ev.handle_press([&] (Input::Keycode key, Input::Codepoint cp) {
 					if (key == Input::KEY_LEFTMETA || key == Input::KEY_RIGHTMETA) {
 						_meta_down = true;
+						shortcut_consumed = true;
 						return;
 					}
 					if (_meta_down) {
 						_meta_down = false;   /* consumed */
+						shortcut_consumed = true;
 						switch (key) {
 						case Input::KEY_L:        _sstate.left.toggle();   _dirty = true; return;
 						case Input::KEY_B:        _sstate.bottom.toggle(); _dirty = true; return;
@@ -4097,7 +4107,7 @@ namespace Hermos {
 						case Input::KEY_PAGEDOWN: _quick_tile(7);  return;
 						case Input::KEY_F:        _quick_tile(8);  return;
 						case Input::KEY_R:        _quick_tile(9);  return;
-						default: break;
+						default: shortcut_consumed = false; break;   /* not ours: the app gets it */
 						}
 					}
 					if (key == Input::BTN_LEFT) {
@@ -4122,7 +4132,7 @@ namespace Hermos {
 				});
 
 				/* forward the event into the hosted Cell (if any) */
-				_forward_input(ev);
+				if (!shortcut_consumed) _forward_input(ev);
 			});
 
 			if (_dirty) { _render(); _dirty = false; }

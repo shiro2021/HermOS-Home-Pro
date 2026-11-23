@@ -180,7 +180,8 @@ struct State
 	Panel left   { Edge::Left,   Visibility::AutoHide,      78.0f };
 	Panel bottom { Edge::Bottom, Visibility::AlwaysVisible, 28.0f };
 	Panel right  { Edge::Right,  Visibility::AlwaysVisible, 356.0f };   /* Agents & Workers pane + rail */
-	float right_slim { 26.0f };            /* width of the slim bar that stays when the pane is hidden (design px) */
+	float right_slim { 26.0f };
+	float right_rail { 92.0f };            /* width of the navigation rail beside the pane (design px) */            /* width of the slim bar that stays when the pane is hidden (design px) */
 
 	char const *clock   { "Tue 10 Dec 2024 07:42" };
 	char const *prompt  { nullptr };       /* user-typed text, null = placeholder */

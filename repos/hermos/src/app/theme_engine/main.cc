@@ -80,7 +80,7 @@ namespace Theme {
 		char _pl_mode[16] { "autohide" };
 		char _pb_mode[16] { "visible" };
 		char _pr_mode[16] { "visible" };
-		int  _pl_size { 78 }, _pb_size { 28 }, _pr_size { 356 }, _pr_slim { 26 };
+		int  _pl_size { 78 }, _pb_size { 28 }, _pr_size { 356 }, _pr_slim { 26 }, _pr_rail { 92 };
 
 		/* Step 3: the normalized snap slots (quick tiling) */
 		enum { MAX_SNAPS = 4 };
@@ -253,6 +253,8 @@ namespace Theme {
 					_copy_val(sect == SECT_PLEFT ? _pl_mode : sect == SECT_PBOTTOM ? _pb_mode : _pr_mode, val_start, le);
 				} else if (Genode::strcmp(key, "slim") == 0 && sect == SECT_PRIGHT) {
 					_pr_slim = val;
+				} else if (Genode::strcmp(key, "rail") == 0 && sect == SECT_PRIGHT) {
+					_pr_rail = val;
 				} else if (Genode::strcmp(key, "size") == 0 && (sect == SECT_PLEFT || sect == SECT_PBOTTOM || sect == SECT_PRIGHT)) {
 					(sect == SECT_PLEFT ? _pl_size : sect == SECT_PBOTTOM ? _pb_size : _pr_size) = val;
 				} else if (Genode::strcmp(key, "id") == 0 && sect == SECT_CELL && cur) {
@@ -400,7 +402,7 @@ namespace Theme {
 					xml.node("panels", [&] () {
 						xml.node("left",   [&] () { xml.attribute("mode", _pl_mode); xml.attribute("size", _pl_size); });
 						xml.node("bottom", [&] () { xml.attribute("mode", _pb_mode); xml.attribute("size", _pb_size); });
-						xml.node("right",  [&] () { xml.attribute("mode", _pr_mode); xml.attribute("size", _pr_size); xml.attribute("slim", _pr_slim); });
+						xml.node("right",  [&] () { xml.attribute("mode", _pr_mode); xml.attribute("size", _pr_size); xml.attribute("slim", _pr_slim); xml.attribute("rail", _pr_rail); });
 					});
 					xml.node("snaps", [&] () {
 						for (int i = 0; i < _snap_count; ++i) {

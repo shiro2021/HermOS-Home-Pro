@@ -121,3 +121,5 @@ theme
     size: 356
     # width of the slim bar that stays on the edge while the pane is hidden
     slim: 26
+    # width of the navigation rail beside the pane; Cells keep clear of rail + pane (or rail + slim bar)
+    rail: 92

@@ -59,6 +59,8 @@ function carries one of these marks:
 | Windows: frame, close, minimise, restore from the taskbar | VERIFIED | |
 | Window maximise (uses the Plasma-style client area) | BUILT | |
 | Cell drag by the title strip | VERIFIED | Moves; a grab in the top 10 px is an edge resize, not a move. |
+| Work area: maximise, quick-tile (`Meta+arrows`, `Meta+F`, …) and edge snap use one rectangle (screen minus shown panels, the right pane or slim bar, and the rail; `panels > right > rail`) | VERIFIED | A Cell and its app content never reach under a panel; tiles follow the pane when it is hidden or shown. |
+| Desktop shortcuts are not passed on to the focused app | VERIFIED | `Meta+A` used to type an `a` into the Terminal. |
 | Cell edge resize, snap to screen edges | BUILT | Resize starts (edge detection verified); snap not re-tested. |
 | OS-wide ink (`theme.hid` `+ ink`): active accent vs carbon-gray inactive | VERIFIED | One mapping in the canvas recolours every accent-coloured pixel (shapes, text, icons, glows) of an inactive Cell to carbon gray and dims its bright text; pictures keep their colours. Changing `accent` recolours every active element. Panels, rail and dock are always drawn active; their own selected/unselected states are separate. |
 | Hosted Cell: title, minimise, maximise, close; opaque; true z-order | VERIFIED | Strip geometry derives from the Cell's own size. Minimise and taskbar restore tested; restore no longer reopens the mock-up Cells. |
