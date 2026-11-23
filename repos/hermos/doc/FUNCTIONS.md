@@ -128,6 +128,7 @@ function carries one of these marks:
 
 | Function | State | Notes |
 |---|---|---|
+| Memory: reserved quotas sized to real use (top-level reservations about 0.6 GB; measured use about 0.2-0.27 GB) | VERIFIED | Booted, with Terminal, Files and the data partition working, at 1024 MB and at 768 MB of RAM. The `apps` sandbox is 256 MB (was 640). Quotas are reservations: this is what leaves room for a large app on a 2 GB PC. |
 | Genode capability isolation between components | VERIFIED | Each component only gets routed services. |
 | Gui framebuffers charged to the client's session quota; mode clamped to 8192×8192; buffer and mode change together | VERIFIED | Clients upgrade their quota (`Gui::Connection::buffer`); the server passes upgrades to the session. |
 | Cell placement and sidebar privilege taken only from the child name the desktop controls | VERIFIED | `term<N>` / `files<N>` / `app<N>` must match the whole name. |

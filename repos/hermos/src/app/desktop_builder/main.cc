@@ -2194,7 +2194,7 @@ namespace Hermos {
 			g.node("start", [&] {
 				g.attribute("name", term.string());
 				g.attribute("caps", 110);
-				g.attribute("ram", "12M");
+				g.attribute("ram", "16M");
 				g.node("provides", [&] {
 					g.node("service", [&] { g.attribute("name", "Terminal"); });
 				});
@@ -2214,7 +2214,7 @@ namespace Hermos {
 			g.node("start", [&] {
 				g.attribute("name", vfs.string());
 				g.attribute("caps", 200);
-				g.attribute("ram", "48M");
+				g.attribute("ram", "16M");
 				g.node("provides", [&] {
 					g.node("service", [&] { g.attribute("name", "File_system"); });
 				});
@@ -2266,7 +2266,7 @@ namespace Hermos {
 			g.node("start", [&] {
 				g.attribute("name", fsrom.string());
 				g.attribute("caps", 200);
-				g.attribute("ram", "32M");
+				g.attribute("ram", "8M");
 				g.node("provides", [&] {
 					g.node("service", [&] { g.attribute("name", "ROM"); });
 				});
@@ -2285,7 +2285,7 @@ namespace Hermos {
 			g.node("start", [&] {
 				g.attribute("name", bash.string());
 				g.attribute("caps", 1000);
-				g.attribute("ram", "32M");
+				g.attribute("ram", "16M");
 				g.node("binary", [&] { g.attribute("name", "/bin/bash"); });
 				g.node("config", [&] {
 					g.node("libc", [&] {
@@ -2385,7 +2385,7 @@ namespace Hermos {
 			g.node("start", [&] {
 				g.attribute("name", "data_part");
 				g.attribute("caps", 120);
-				g.attribute("ram", "16M");
+				g.attribute("ram", "8M");
 				g.node("provides", [&] { g.node("service", [&] { g.attribute("name", "Block"); }); });
 				g.node("binary", [&] { g.attribute("name", "part_block"); });
 				g.node("config", [&] {
@@ -2407,14 +2407,14 @@ namespace Hermos {
 			g.node("start", [&] {
 				g.attribute("name", "data_fs");
 				g.attribute("caps", 400);
-				g.attribute("ram", "64M");
+				g.attribute("ram", "40M");
 				g.node("provides", [&] { g.node("service", [&] { g.attribute("name", "File_system"); }); });
 				g.node("binary", [&] { g.attribute("name", "vfs"); });
 				g.node("config", [&] {
 					g.node("vfs", [&] {
 						g.node("rump", [&] {
 							g.attribute("fs", "ext2fs");
-							g.attribute("ram", "48M");
+							g.attribute("ram", "24M");
 							g.attribute("writeable", "yes");
 						});
 					});

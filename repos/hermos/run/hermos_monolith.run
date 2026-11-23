@@ -219,7 +219,8 @@ config
         + report | name: ai_command | label: ai_command | buffer: 4096
         + rom | name: mykee.key
 
-+ start apps | caps: 6000 | ram: 640M
+# apps sandbox: sized to use (~40 MB per Terminal, ~24 MB Files, ~56 MB data stack), not to a worst case
++ start apps | caps: 6000 | ram: 256M
   + binary init
   + route
     + service Block | + child drivers
