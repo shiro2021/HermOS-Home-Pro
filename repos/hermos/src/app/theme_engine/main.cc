@@ -18,6 +18,7 @@
 #include <util/string.h>
 #include <base/heap.h>
 #include <os/vfs.h>
+#include <hermos_compat/vfs.h>
 
 using namespace Genode;
 
@@ -35,7 +36,7 @@ namespace Theme {
 
 		/* native VFS front-end (replaces the libc open/read path) */
 		Genode::Heap   _heap { _env.ram(), _env.rm() };
-		Root_directory _vfs  { _env, _heap };
+		Root_directory _vfs  { _env, _heap, Hermos::empty_vfs_config() };
 
 		int _screen_w { 0 }, _screen_h { 0 };
 

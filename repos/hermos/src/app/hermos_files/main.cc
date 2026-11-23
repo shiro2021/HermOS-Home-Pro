@@ -39,6 +39,7 @@
 #include <os/pixel_rgb888.h>
 #include <os/surface.h>
 #include <os/vfs.h>
+#include <hermos_compat/vfs.h>
 #include <timer_session/connection.h>
 #include <util/color.h>
 #include <util/string.h>
@@ -253,7 +254,7 @@ class FileManager
 		bool del(char const *abs_path)
 		{
 			_dir.unlink(Directory::Path(abs_path));
-			return !_dir.entry_exists(Directory::Path(abs_path));
+			return !(_dir.file_exists(Directory::Path(abs_path)) || _dir.directory_exists(Directory::Path(abs_path)));
 		}
 
 		FileKind kind_of(char const *abs_path, Allocator &alloc)
@@ -624,7 +625,7 @@ char const *Main::_menu_items[4][6] = {
 	{ "SSH Connect", "Convert", "Hex Edit", "Analyze", "", "" },
 };
 
-Main::Main(Env &env) : _env(env), _vfs(env, _heap)
+Main::Main(Env &env) : _env(env), _vfs(env, _heap, Hermos::empty_vfs_config())
 {
 	log("hermos_files: Universal Data Engine starting");
 

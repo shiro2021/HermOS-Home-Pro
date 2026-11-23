@@ -14,7 +14,7 @@ python3 - "$P" "$OUT" "$READELF" <<'PY'
 import glob, os, shutil, subprocess, sys, tarfile
 P, OUT, READELF = sys.argv[1:4]
 D = f"{P}/var/depot/cproc"
-own = set()                                      # everything, the dynamic linker included, matches the depot build
+own = {"ld.lib.so"}                              # the dynamic linker comes from the HermOS image (its base matches the depot build)
 avail = {}                                       # file name -> path, from the verified depot archives
 for f in glob.glob(f"{D}/bin/x86_64/*/*/*") + glob.glob(f"{D}/raw/*/*/*") + glob.glob(f"{P}/var/depot/genodelabs/bin/x86_64/base-nova/*/ld.lib.so"):
     if os.path.isfile(f) and os.path.basename(f) not in ("LICENSE",): avail[os.path.basename(f)] = f
@@ -25,7 +25,7 @@ def needed(path):
     return [l.split("[")[1].split("]")[0] for l in out.splitlines() if "NEEDED" in l]
 
 # loaded by name at run time (plugins, data, virtual file system plugins, NSS modules, the software GL driver)
-dynamic = ["ld.lib.so", "vfs_pipe.lib.so", "vfs_lwip.lib.so", "vfs_jitterentropy.lib.so", "vfs_xoroshiro.lib.so", "vfs_qtwebengine_shm.lib.so", "vfs_gpu.lib.so", "mesa_gpu-softpipe.lib.so",
+dynamic = ["vfs_pipe.lib.so", "vfs_lwip.lib.so", "vfs_jitterentropy.lib.so", "vfs_xoroshiro.lib.so", "vfs_qtwebengine_shm.lib.so", "vfs_gpu.lib.so", "mesa_gpu-softpipe.lib.so",
            "nssckbi.lib.so", "softokn3.lib.so", "freebl3.lib.so", "libqgenode.lib.so",
            "qt6_dejavusans.tar", "qt6_libqgenode.tar", "qt6_libqjpeg.tar", "qt6_libqsqlite.tar",
            "qt6_webengine_resources.tar", "qt6_webengine_translations.tar"]

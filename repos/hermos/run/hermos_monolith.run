@@ -269,6 +269,7 @@ if {$browser_dir ne ""} {
     + service Rtc   | + child pc_rtc
     + service Timer | + child timer
     + service Report | + child report_rom
+    + service ROM | label_last: ld.lib.so | + parent
     + service ROM | + child browser_rom
     + any-service | + parent
   + config

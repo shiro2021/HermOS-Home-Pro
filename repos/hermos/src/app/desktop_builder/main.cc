@@ -33,6 +33,7 @@
 #include <util/string.h>
 #include <util/xml_generator.h>
 #include <os/vfs.h>
+#include <hermos_compat/vfs.h>
 
 #include <hermos_ui/window_geometry.h>
 #include <hermos_ui/cell_session.h>
@@ -351,7 +352,7 @@ namespace Hermos {
 		 * the libc open/read path. The config is applied in the constructor
 		 * body (Node cannot be built from Xml_node directly). */
 		Attached_rom_dataspace _config { _env, "config" };
-		Root_directory _vfs { _env, _asset_heap };
+		Root_directory _vfs { _env, _asset_heap, Hermos::empty_vfs_config() };
 		void         *_font_data { nullptr };
 		size_t        _font_size { 0 };
 		FontRenderer _font { };
