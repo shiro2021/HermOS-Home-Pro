@@ -2054,6 +2054,10 @@ namespace Hermos {
 			int slot = -1;
 			for (int i = 0; i < MAX_APPS; ++i)
 				if (_app_kind[i] == APP_NONE && !_win_open[i]) { slot = i; break; }
+			/* the mock-up Cells (preview) hold no app: an app takes over the last of them */
+			if (slot < 0)
+				for (int i = MAX_APPS - 1; i >= 2; --i)
+					if (_app_kind[i] == APP_NONE && !_gui_root.cells().at(i)) { slot = i; break; }
 			if (slot < 0) { log("HermOS: all Cell slots busy"); return; }
 			_app_kind[slot] = kind;
 			_win_open[slot] = true;
