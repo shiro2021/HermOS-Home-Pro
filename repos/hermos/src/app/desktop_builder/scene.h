@@ -577,20 +577,19 @@ static inline void draw_rail(Ctx &g, State const &st, Hits &hits)
 	Poly p; chamfer_poly(p, g.X(x), g.Y(y), g.L(w), g.L(h), g.L(24), 0, 0, g.L(24));
 	glow_poly(g.c, p, g.L(8), g.L(3), Rgba { 0, 0, 0, 0.5f });
 	fill_poly(g.c, p, VGrad { g.Y(y), g.Y(y + h), Rgba { 17, 17, 19, 0.97f }, Rgba { 9, 9, 10, 0.98f } });
-	stroke_poly(g.c, p, g.L(1.4f), VGrad { g.Y(y), g.Y(y + h), Rgba { 122, 104, 82, 0.9f }, Rgba { 64, 54, 44, 0.9f } });
+	stroke_poly(g.c, p, g.L(1.4f), VGrad { g.Y(y), g.Y(y + h), Rgba { 176, 128, 76, 0.95f }, Rgba { 96, 70, 46, 0.9f } });
 
-	/* top: compass medallion */
-	g.rng(1128, 52, 25, 2.2f, Rgba { 255, 140, 36, 0.95f });
-	g.rng(1128, 52, 22, 1.0f, Rgba { 255, 190, 110, 0.5f });
-	draw_image(g.c, g.a.compass, g.X(1128 - 20), g.Y(52 - 20), g.L(40), g.L(40),
-	           [&](float px, float py) { return sd_circle(px, py, g.X(1128), g.Y(52), g.L(20)); });
+	/* top: compass medallion in a hexagonal frame */
+	hex_tile(g, 1128, 52, 54, 52, false);
+	draw_image(g.c, g.a.compass, g.X(1128 - 19), g.Y(52 - 19), g.L(38), g.L(38),
+	           [&](float px, float py) { return sd_circle(px, py, g.X(1128), g.Y(52), g.L(19)); });
 
 	static char const *const names[6] = { "Agents", "System", "Files", "Network", "Devices", "Settings" };
 	for (int i = 0; i < 6; ++i) {
 		float const cy = 115 + float(i) * 70.8f;
 		bool const act = i == st.rail_active;
 		hits.rail[i] = { 1128 - 26, cy - 26, 52, 64 };     /* tile + label */
-		hex_tile(g, 1128, cy, 48, 46, act);
+		if (act) { hex_tile(g, 1128, cy - 2, 56, 54, true); hex_tile(g, 1128, cy - 2, 56, 54, true); } else hex_tile(g, 1128, cy, 48, 46, false);
 		Rgba const ic = act ? Rgba { 255, 164, 64, 1.0f } : Rgba { 236, 238, 240, 0.96f };
 		switch (i) {
 		case 0: Icon::agents(g, 1128, cy, 1.0f, ic); break;
@@ -600,7 +599,7 @@ static inline void draw_rail(Ctx &g, State const &st, Hits &hits)
 		case 4: Icon::devices(g, 1128, cy, 1.0f, ic); break;
 		case 5: Icon::gear(g, 1128, cy, 0.95f, ic); break;
 		}
-		g.textc(g.f.med, 1128, cy + 25.0f, 10.4f, Rgba { 245, 246, 248, 0.97f }, names[i]);
+		g.textc(g.f.med, 1128, cy + 25.5f, 11.4f, Rgba { 245, 246, 248, 0.97f }, names[i]);
 	}
 	/* badge on Agents: the number of apps that are really running */
 	int running = 0;
@@ -655,6 +654,9 @@ static inline void card_chrome(Ctx &g, float x, float y, float w, float h, float
 	if (active) stroke_poly(g.c, cp, g.L(t * 0.4f), Solid { fs.core });
 }
 
+static inline void more_dots(Ctx &g, float cx, float cy, Rgba col)
+{ for (int i = -1; i <= 1; ++i) g.disc(cx + float(i) * 5.2f, cy, 1.5f, col); }
+
 static inline void draw_sidebar(Ctx &g, State const &st, Hits &hits)
 {
 	float const x = 1180, y = 0, w = 356, h = 548;
@@ -680,6 +682,8 @@ static inline void draw_sidebar(Ctx &g, State const &st, Hits &hits)
 
 	hits.app_play_n = st.app_count;
 	int ai = 0, ii = 0;
+	int const nshown = nact > 3 ? 3 : nact;
+	float const ihy = nshown ? 69.0f + float(nshown) * 67.0f + 4.0f : 120.0f;   /* 'Inactive' header y */
 	for (int i = 0; i < st.app_count; ++i) {
 		AppEntry const &a = st.apps[i];
 		if (a.active) {
@@ -696,19 +700,20 @@ static inline void draw_sidebar(Ctx &g, State const &st, Hits &hits)
 				g.rr_stroke(1478, cy + 12, 32, 32, 8, 1.0f, Rgba { 150, 100, 60, 0.9f });
 				Icon::close_x(g, 1494, cy + 28, 0.7f, Rgba { 240, 220, 200, 1.0f }, 1.8f);
 				hits.app_close[i] = { 1478, cy + 12, 32, 32 };
-			}
+			} else more_dots(g, 1494, cy + ch / 2, Rgba { 236, 238, 242, 0.95f });
 			++ai;
 		} else {
 			if (ii >= 5) continue;
-			float const ry = 297.5f + float(ii) * 51.2f, rh = 48;
+			float const ry = ihy + 24.5f + float(ii) * 51.2f, rh = 48;
 			card_chrome(g, 1195, ry, 327, rh, 8, false, st.frame);
 			agent_icon_tile(g, 1210, ry + 6, 36, a.kind, false);
 			g.text(g.f.med, 1261, ry + 7, 11.1f, Pal::white, a.name);
 			g.text(g.f.reg, 1261, ry + 25.5f, 10.5f, Rgba { 178, 180, 184, 1.0f }, a.sub);
-			g.rr_fill(1478, ry + 7, 33, 33, 8, Rgba { 36, 35, 36, 1.0f });
-			g.rr_stroke(1478, ry + 7, 33, 33, 8, 1.0f, Rgba { 96, 88, 78, 0.9f });
-			Icon::play(g, 1494, ry + 23.5f, 0.78f, Rgba { 238, 214, 190, 1.0f });
-			hits.app_play[i] = { 1478, ry + 7, 33, 33 };
+			g.rr_fill(1446, ry + 7, 33, 33, 8, Rgba { 36, 35, 36, 1.0f });
+			g.rr_stroke(1446, ry + 7, 33, 33, 8, 1.0f, Rgba { 96, 88, 78, 0.9f });
+			Icon::play(g, 1462, ry + 23.5f, 0.78f, Rgba { 238, 214, 190, 1.0f });
+			hits.app_play[i] = { 1446, ry + 7, 33, 33 };
+			more_dots(g, 1498, ry + 23.5f, Rgba { 236, 238, 242, 0.95f });
 			++ii;
 		}
 	}
@@ -717,7 +722,7 @@ static inline void draw_sidebar(Ctx &g, State const &st, Hits &hits)
 
 	char ihdr[24]; { int k = 0; char const *t = "Inactive ("; while (*t) ihdr[k++] = *t++;
 	                 ihdr[k++] = char('0' + (nina > 9 ? 9 : nina)); ihdr[k++] = ')'; ihdr[k] = 0; }
-	g.text(g.f.med, 1200, 273, 13.4f, Pal::white, ihdr);
+	g.text(g.f.med, 1200, ihy, 13.4f, Pal::white, ihdr);
 }
 
 /* ------------------------------------------------------------- taskbar */
