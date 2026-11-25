@@ -589,7 +589,7 @@ static inline void draw_rail(Ctx &g, State const &st, Hits &hits)
 		float const cy = 115 + float(i) * 70.8f;
 		bool const act = i == st.rail_active;
 		hits.rail[i] = { 1128 - 26, cy - 26, 52, 64 };     /* tile + label */
-		if (act) { hex_tile(g, 1128, cy - 2, 56, 54, true); hex_tile(g, 1128, cy - 2, 56, 54, true); } else hex_tile(g, 1128, cy, 48, 46, false);
+		if (act) hex_tile(g, 1128, cy, 52, 50, true); else hex_tile(g, 1128, cy, 48, 46, false);
 		Rgba const ic = act ? Rgba { 255, 164, 64, 1.0f } : Rgba { 236, 238, 240, 0.96f };
 		switch (i) {
 		case 0: Icon::agents(g, 1128, cy, 1.0f, ic); break;
