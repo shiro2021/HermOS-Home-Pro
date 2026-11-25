@@ -438,9 +438,9 @@ static inline void hex_tile(Ctx &g, float cx, float cy, float w, float h, bool a
 	p.add(g.X(cx - hw), g.Y(cy)); p.add(g.X(cx - hw + tip), g.Y(cy - hh)); p.add(g.X(cx + hw - tip), g.Y(cy - hh));
 	p.add(g.X(cx + hw), g.Y(cy)); p.add(g.X(cx + hw - tip), g.Y(cy + hh)); p.add(g.X(cx - hw + tip), g.Y(cy + hh)); p.finish();
 	if (active) {
-		glow_poly(g.c, p, g.L(16), g.L(6), Rgba { 255, 130, 30, 0.55f });
-		fill_poly(g.c, p, VGrad { g.Y(cy - hh), g.Y(cy + hh), Rgba { 255, 154, 60, 1.0f }, Rgba { 214, 84, 16, 1.0f } });
-		stroke_poly(g.c, p, g.L(2.0f), Solid { Rgba { 255, 196, 130, 1.0f } });
+		glow_poly(g.c, p, g.L(12), g.L(4), Rgba { 255, 130, 30, 0.60f });
+		fill_poly(g.c, p, VGrad { g.Y(cy - hh), g.Y(cy + hh), Rgba { 44, 26, 14, 1.0f }, Rgba { 22, 14, 9, 1.0f } });
+		stroke_poly(g.c, p, g.L(2.0f), VGrad { g.Y(cy - hh), g.Y(cy + hh), Rgba { 255, 196, 130, 1.0f }, Rgba { 255, 110, 26, 1.0f } });
 	} else {
 		fill_poly(g.c, p, VGrad { g.Y(cy - hh), g.Y(cy + hh), Rgba { 38, 38, 40, 1.0f }, Rgba { 20, 20, 22, 1.0f } });
 		stroke_poly(g.c, p, g.L(1.2f), Solid { Rgba { 104, 88, 70, 0.9f } });
@@ -591,7 +591,7 @@ static inline void draw_rail(Ctx &g, State const &st, Hits &hits)
 		bool const act = i == st.rail_active;
 		hits.rail[i] = { 1128 - 26, cy - 26, 52, 64 };     /* tile + label */
 		hex_tile(g, 1128, cy, 48, 46, act);
-		Rgba const ic = act ? Rgba { 255, 232, 205, 1.0f } : Rgba { 236, 238, 240, 0.96f };
+		Rgba const ic = act ? Rgba { 255, 164, 64, 1.0f } : Rgba { 236, 238, 240, 0.96f };
 		switch (i) {
 		case 0: Icon::agents(g, 1128, cy, 1.0f, ic); break;
 		case 1: Icon::gear(g, 1128, cy, 0.95f, ic); break;
@@ -635,12 +635,32 @@ static inline void agent_icon_tile(Ctx &g, float x, float y, float s, int kind, 
 	app_icon(g, kind, x + s / 2, y + s / 2, s / 40.0f * 1.0f, active ? Rgba { 255, 170, 80, 1.0f } : Rgba { 232, 214, 190, 0.95f });
 }
 
+/* A list card in the Boot/Storyboard look, drawn from the same theme frame values as a Cell:
+ * crisp rim (white-hot core when active), tight bloom, dark bezel with a fine inner line. */
+static inline void card_chrome(Ctx &g, float x, float y, float w, float h, float ch, bool active, FrameStyle const &fs)
+{
+	Poly cp; chamfer_poly(cp, g.X(x), g.Y(y), g.L(w), g.L(h), g.L(ch), g.L(ch), g.L(ch), g.L(ch));
+	if (active) {
+		Rgba hot = fs.glow; hot.a = fs.bloom_alpha * 0.7f;
+		glow_poly(g.c, cp, g.L(fs.bloom_reach * 0.8f), g.L(fs.bloom_sigma * 0.8f), hot);
+		fill_poly(g.c, cp, VGrad { g.Y(y), g.Y(y + h), Rgba { 29, 18, 11, 1.0f }, Rgba { 15, 11, 9, 1.0f } });
+	} else
+		fill_poly(g.c, cp, VGrad { g.Y(y), g.Y(y + h), Rgba { 19, 19, 21, 1.0f }, Rgba { 12, 12, 14, 1.0f } });
+	float const in = 3.5f;
+	Poly ip; chamfer_poly(ip, g.X(x + in), g.Y(y + in), g.L(w - 2 * in), g.L(h - 2 * in), g.L(ch - 2), g.L(ch - 2), g.L(ch - 2), g.L(ch - 2));
+	stroke_poly(g.c, ip, g.L(1.0f), Solid { active ? Rgba { 255, 170, 90, 0.26f } : Rgba { 150, 155, 162, 0.14f } });
+	float const t = (active ? fs.border * 0.75f : fs.border * 0.5f);
+	Rgba const a = active ? fs.active_a : fs.carbon_a, b = active ? fs.active_b : fs.carbon_b;
+	stroke_poly(g.c, cp, g.L(t), VGrad { g.Y(y), g.Y(y + h), a, b });
+	if (active) stroke_poly(g.c, cp, g.L(t * 0.4f), Solid { fs.core });
+}
+
 static inline void draw_sidebar(Ctx &g, State const &st, Hits &hits)
 {
 	float const x = 1180, y = 0, w = 356, h = 548;
 	Poly p; chamfer_poly(p, g.X(x), g.Y(y), g.L(w + 4), g.L(h), 0, 0, 0, 0);
 	fill_poly(g.c, p, VGrad { g.Y(y), g.Y(y + h), Rgba { 10, 10, 12, 0.985f }, Rgba { 8, 8, 9, 0.985f } });
-	g.ln(1180.5f, 0, 1180.5f, 548, 1.2f, Rgba { 70, 62, 54, 0.8f });
+	g.ln(1180.5f, 0, 1180.5f, 548, 1.6f, Rgba { 255, 140, 46, 0.75f });
 
 	int nact = 0, nina = 0;
 	for (int i = 0; i < st.app_count; ++i) (st.apps[i].active ? nact : nina)++;
@@ -665,10 +685,7 @@ static inline void draw_sidebar(Ctx &g, State const &st, Hits &hits)
 		if (a.active) {
 			if (ai >= 3) continue;
 			float const cy = 69 + float(ai) * 67, ch = 58;
-			Poly cp = Poly(); chamfer_poly(cp, g.X(1195), g.Y(cy), g.L(327), g.L(ch), g.L(9), g.L(9), g.L(9), g.L(9));
-			glow_poly(g.c, cp, g.L(10), g.L(4), Rgba { 255, 110, 20, 0.42f });
-			fill_poly(g.c, cp, VGrad { g.Y(cy), g.Y(cy + ch), Rgba { 29, 18, 11, 1.0f }, Rgba { 17, 12, 9, 1.0f } });
-			stroke_poly(g.c, cp, g.L(1.8f), VGrad { g.Y(cy), g.Y(cy + ch), Rgba { 255, 150, 60, 1.0f }, Rgba { 236, 104, 24, 1.0f } });
+			card_chrome(g, 1195, cy, 327, ch, 9, true, st.frame);
 			g.disc(1204, cy + 11, 1.9f, Rgba { 255, 140, 40, 1.0f });
 			g.disc(1204, cy + ch - 12, 1.9f, Rgba { 255, 140, 40, 1.0f });
 			agent_icon_tile(g, 1211, cy + (ch - 40) / 2, 40, a.kind, true);
@@ -684,9 +701,7 @@ static inline void draw_sidebar(Ctx &g, State const &st, Hits &hits)
 		} else {
 			if (ii >= 5) continue;
 			float const ry = 297.5f + float(ii) * 51.2f, rh = 48;
-			Poly rp; chamfer_poly(rp, g.X(1195), g.Y(ry), g.L(327), g.L(rh), g.L(8), g.L(8), g.L(8), g.L(8));
-			fill_poly(g.c, rp, VGrad { g.Y(ry), g.Y(ry + rh), Rgba { 17, 17, 19, 1.0f }, Rgba { 12, 12, 14, 1.0f } });
-			stroke_poly(g.c, rp, g.L(1.1f), Solid { Rgba { 86, 76, 66, 0.85f } });
+			card_chrome(g, 1195, ry, 327, rh, 8, false, st.frame);
 			agent_icon_tile(g, 1210, ry + 6, 36, a.kind, false);
 			g.text(g.f.med, 1261, ry + 7, 11.1f, Pal::white, a.name);
 			g.text(g.f.reg, 1261, ry + 25.5f, 10.5f, Rgba { 178, 180, 184, 1.0f }, a.sub);
