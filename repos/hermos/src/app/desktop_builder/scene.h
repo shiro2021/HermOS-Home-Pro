@@ -162,6 +162,11 @@ struct FrameStyle
 	Rgba  active_b     { 226, 92, 20, 1.0f };     /* ... deep orange */
 	Rgba  carbon_a     { 92, 96, 102, 1.0f };     /* inactive border: carbon gray gradient */
 	Rgba  carbon_b     { 48, 51, 56, 1.0f };
+	float bloom_reach  { 6.0f }, bloom_sigma { 1.8f }; /* tight hot halo hugging the rim */
+	float bloom_alpha  { 0.85f };
+	float bezel        { 11.0f };               /* dark carbon bezel just inside the rim */
+	float bezel_alpha  { 0.80f };
+	Rgba  core         { 255, 214, 150, 1.0f };  /* white-hot centre line of an active rim */
 	Rgba  shadow       { 0, 0, 0, 0.38f };        /* inactive Cells only get a soft drop shadow */
 };
 
@@ -786,17 +791,28 @@ static inline void window_frame(Ctx &g, WinGeom const &wg, bool active, bool hos
 {
 	Poly p = window_shape(wg.x, wg.y, wg.w, wg.h);
 	float const k = wg.s;
-	if (active) glow_poly(g.c, p, fs.glow_reach * k, fs.glow_sigma * k, fs.glow);
-	else        glow_poly(g.c, p, fs.shadow_reach * k, fs.shadow_sigma * k, fs.shadow);
+	if (active) {
+		/* wide soft bloom + tight hot halo (Boot / Storyboard look) */
+		glow_poly(g.c, p, fs.glow_reach * k, fs.glow_sigma * k, fs.glow);
+		Rgba hot = fs.glow; hot.a = fs.bloom_alpha;
+		glow_poly(g.c, p, fs.bloom_reach * k, fs.bloom_sigma * k, hot);
+	} else
+		glow_poly(g.c, p, fs.shadow_reach * k, fs.shadow_sigma * k, fs.shadow);
 	/* a Cell that hosts an app is fully opaque, so a Cell behind it can never bleed through */
 	float const a0 = hosted ? 1.0f : 0.95f, a1 = hosted ? 1.0f : 0.97f;
 	fill_poly(g.c, p, VGrad { wg.y, wg.y + wg.h, Rgba { 17, 18, 21, a0 }, Rgba { 8, 9, 11, a1 } });
-	/* inner bevel, tinted like the border */
-	Poly q = window_shape(wg.x + 4 * k, wg.y + 4 * k, wg.w - 8 * k, wg.h - 8 * k);
-	stroke_poly(g.c, q, 1.0f * k, Solid { active ? Rgba { 255, 170, 90, 0.20f } : Rgba { 150, 155, 162, 0.10f } });
-	/* border */
+	/* dark carbon bezel band inside the rim, closed by a fine inner line */
+	float const bz = fs.bezel * k;
+	if (bz > 1.0f) {
+		Poly q = window_shape(wg.x + bz * 0.5f, wg.y + bz * 0.5f, wg.w - bz, wg.h - bz);
+		stroke_poly(g.c, q, bz, Solid { Rgba { 4, 5, 6, fs.bezel_alpha } });
+		Poly r = window_shape(wg.x + bz, wg.y + bz, wg.w - 2 * bz, wg.h - 2 * bz);
+		stroke_poly(g.c, r, 1.0f * k, Solid { active ? Rgba { 255, 170, 90, 0.22f } : Rgba { 150, 155, 162, 0.12f } });
+	}
+	/* rim: bright orange, with a white-hot core line when active */
 	Rgba const a = active ? fs.active_a : fs.carbon_a, b = active ? fs.active_b : fs.carbon_b;
 	stroke_poly(g.c, p, fs.border * k, DGrad { wg.x, wg.y, wg.x + wg.w, wg.y + wg.h, a, b });
+	if (active) stroke_poly(g.c, p, fs.border * k * 0.45f, Solid { fs.core });
 }
 
 /* local-coordinate helper for window content; (lx,ly) in reference px */

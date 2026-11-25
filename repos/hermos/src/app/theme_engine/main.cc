@@ -58,8 +58,10 @@ namespace Theme {
 
 		/* Cell frame look: lengths are fractions of the screen height (1/_scale), alpha in percent,
 		 * colours "R,G,B" (see theme.hid) */
-		struct Frame { bool set; int border, glow_reach, glow_sigma, glow_alpha, shadow_reach, shadow_sigma, shadow_alpha; };
-		Frame _fr { false, 16, 160, 55, 58, 80, 30, 38 };
+		struct Frame { bool set; int border, glow_reach, glow_sigma, glow_alpha, shadow_reach, shadow_sigma, shadow_alpha,
+		                    bloom_reach, bloom_sigma, bloom_alpha, bezel, bezel_alpha; };
+		Frame _fr { false, 16, 160, 55, 58, 80, 30, 38, 60, 18, 85, 110, 80 };
+		char _fr_core[16]     { "255,214,150" };
 		char _fr_glow[16]     { "255,112,22" };
 		char _fr_active_a[16] { "255,200,126" };
 		char _fr_active_b[16] { "226,92,20" };
@@ -236,9 +238,11 @@ namespace Theme {
 					static struct { char const *k; int *v; } const map[] = {
 						{ "border", &_fr.border }, { "glow_reach", &_fr.glow_reach }, { "glow_sigma", &_fr.glow_sigma },
 						{ "glow_alpha", &_fr.glow_alpha }, { "shadow_reach", &_fr.shadow_reach },
-						{ "shadow_sigma", &_fr.shadow_sigma }, { "shadow_alpha", &_fr.shadow_alpha } };
+						{ "shadow_sigma", &_fr.shadow_sigma }, { "shadow_alpha", &_fr.shadow_alpha },
+						{ "bloom_reach", &_fr.bloom_reach }, { "bloom_sigma", &_fr.bloom_sigma },
+						{ "bloom_alpha", &_fr.bloom_alpha }, { "bezel", &_fr.bezel }, { "bezel_alpha", &_fr.bezel_alpha } };
 					static struct { char const *k; char *v; } const cols[] = {
-						{ "glow", _fr_glow }, { "active_a", _fr_active_a }, { "active_b", _fr_active_b },
+						{ "glow", _fr_glow }, { "core", _fr_core }, { "active_a", _fr_active_a }, { "active_b", _fr_active_b },
 						{ "carbon_a", _fr_carbon_a }, { "carbon_b", _fr_carbon_b } };
 					for (auto const &m : map)  if (Genode::strcmp(key, m.k) == 0) { *m.v = val; _fr.set = true; }
 					for (auto const &c : cols) if (Genode::strcmp(key, c.k) == 0) { _copy_val(c.v, val_start, le); _fr.set = true; }
@@ -394,6 +398,12 @@ namespace Theme {
 						xml.attribute("shadow_reach", px10(_fr.shadow_reach));
 						xml.attribute("shadow_sigma", px10(_fr.shadow_sigma));
 						xml.attribute("shadow_alpha", _fr.shadow_alpha);
+						xml.attribute("bloom_reach", px10(_fr.bloom_reach));
+						xml.attribute("bloom_sigma", px10(_fr.bloom_sigma));
+						xml.attribute("bloom_alpha", _fr.bloom_alpha);
+						xml.attribute("bezel",       px10(_fr.bezel));
+						xml.attribute("bezel_alpha", _fr.bezel_alpha);
+						xml.attribute("core",     _fr_core);
 						xml.attribute("glow",     _fr_glow);
 						xml.attribute("active_a", _fr_active_a);
 						xml.attribute("active_b", _fr_active_b);

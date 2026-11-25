@@ -3887,6 +3887,12 @@ namespace Hermos {
 					fs.glow_sigma   = len("glow_sigma",   fs.glow_sigma);
 					fs.shadow_reach = len("shadow_reach", fs.shadow_reach);
 					fs.shadow_sigma = len("shadow_sigma", fs.shadow_sigma);
+					fs.bloom_reach  = len("bloom_reach",  fs.bloom_reach);
+					fs.bloom_sigma  = len("bloom_sigma",  fs.bloom_sigma);
+					fs.bezel        = len("bezel",        fs.bezel);
+					fs.bloom_alpha  = float(n.attribute_value("bloom_alpha", 85UL)) / 100.0f;
+					fs.bezel_alpha  = float(n.attribute_value("bezel_alpha", 80UL)) / 100.0f;
+					fs.core         = col("core", fs.core, 1.0f);
 					fs.glow     = col("glow",     fs.glow,     float(n.attribute_value("glow_alpha",   58UL)) / 100.0f);
 					fs.shadow   = Scene::Rgba { 0, 0, 0,       float(n.attribute_value("shadow_alpha", 38UL)) / 100.0f };
 					fs.active_a = col("active_a", fs.active_a, 1.0f);

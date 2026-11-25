@@ -84,7 +84,14 @@ theme
 # 1024 px screen); alpha is a percentage; colours are R,G,B. Only the active Cell glows;
 # inactive Cells get the carbon gray border and a soft drop shadow.
 + frame
-  border: 16
+  border: 22
+  # tight hot halo hugging the rim, dark bezel band inside it, white-hot core line of the rim
+  bloom_reach: 60
+  bloom_sigma: 18
+  bloom_alpha: 85
+  bezel: 110
+  bezel_alpha: 80
+  core: 255,214,150
   glow_reach: 160
   glow_sigma: 55
   glow_alpha: 58
