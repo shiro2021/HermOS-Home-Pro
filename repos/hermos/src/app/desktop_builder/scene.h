@@ -447,6 +447,23 @@ static inline void hex_tile(Ctx &g, float cx, float cy, float w, float h, bool a
 	}
 }
 
+/* hexagon with points at the top and bottom (the mockup's rail tiles) */
+static inline void hex_tile_v(Ctx &g, float cx, float cy, float w, float h, bool active)
+{
+	float const hw = w * 0.5f, hh = h * 0.5f, q = hh * 0.5f;
+	Poly p; p.n = 0;
+	p.add(g.X(cx), g.Y(cy - hh)); p.add(g.X(cx + hw), g.Y(cy - q)); p.add(g.X(cx + hw), g.Y(cy + q));
+	p.add(g.X(cx), g.Y(cy + hh)); p.add(g.X(cx - hw), g.Y(cy + q)); p.add(g.X(cx - hw), g.Y(cy - q)); p.finish();
+	if (active) {
+		glow_poly(g.c, p, g.L(12), g.L(4), Rgba { 255, 130, 30, 0.60f });
+		fill_poly(g.c, p, VGrad { g.Y(cy - hh), g.Y(cy + hh), Rgba { 44, 26, 14, 1.0f }, Rgba { 22, 14, 9, 1.0f } });
+		stroke_poly(g.c, p, g.L(2.0f), VGrad { g.Y(cy - hh), g.Y(cy + hh), Rgba { 255, 196, 130, 1.0f }, Rgba { 255, 110, 26, 1.0f } });
+	} else {
+		fill_poly(g.c, p, VGrad { g.Y(cy - hh), g.Y(cy + hh), Rgba { 38, 38, 40, 1.0f }, Rgba { 20, 20, 22, 1.0f } });
+		stroke_poly(g.c, p, g.L(1.2f), Solid { Rgba { 104, 88, 70, 0.9f } });
+	}
+}
+
 /* ------------------------------------------------------------ the header */
 
 static inline void draw_header(Ctx &g)
@@ -574,13 +591,27 @@ static inline void draw_greeting_search(Ctx &g, State const &st)
 static inline void draw_rail(Ctx &g, State const &st, Hits &hits)
 {
 	float const x = 1090, y = 12, w = 92, h = 540;
-	Poly p; chamfer_poly(p, g.X(x), g.Y(y), g.L(w), g.L(h), g.L(24), 0, 0, g.L(24));
+	/* silhouette traced from the mockup: a chamfered strip plus the notched bulge around the Agents
+	 * tile. A Poly is convex, so the strip and the bulge are two shapes sharing one outline. */
+	Poly p; p.n = 0;
+	static float const pts[][2] = { { 1108, 12 }, { 1163, 12 }, { 1176, 24 }, { 1176, 522 }, { 1163, 534 }, { 1108, 534 },
+	                                { 1090, 516 }, { 1090, 33 } };
+	for (auto const &v : pts) p.add(g.X(v[0]), g.Y(v[1]));
+	p.finish();
+	Poly bu; bu.n = 0;
+	bu.add(g.X(1090), g.Y(85)); bu.add(g.X(1082), g.Y(93)); bu.add(g.X(1082), g.Y(125)); bu.add(g.X(1090), g.Y(133)); bu.finish();
 	glow_poly(g.c, p, g.L(8), g.L(3), Rgba { 0, 0, 0, 0.5f });
-	fill_poly(g.c, p, VGrad { g.Y(y), g.Y(y + h), Rgba { 17, 17, 19, 0.97f }, Rgba { 9, 9, 10, 0.98f } });
-	stroke_poly(g.c, p, g.L(1.4f), VGrad { g.Y(y), g.Y(y + h), Rgba { 176, 128, 76, 0.95f }, Rgba { 96, 70, 46, 0.9f } });
+	VGrad const body { g.Y(y), g.Y(y + h), Rgba { 17, 17, 19, 0.97f }, Rgba { 9, 9, 10, 0.98f } };
+	VGrad const edge { g.Y(y), g.Y(y + h), Rgba { 176, 128, 76, 0.95f }, Rgba { 96, 70, 46, 0.9f } };
+	fill_poly(g.c, p, body);
+	fill_poly(g.c, bu, body);
+	stroke_poly(g.c, p, g.L(1.4f), edge);
+	stroke_poly(g.c, bu, g.L(1.4f), edge);
+	/* open the strip's own edge where the bulge joins it */
+	fill_poly(g.c, [&] { Poly m; m.n = 0; m.add(g.X(1088.4f), g.Y(86.5f)); m.add(g.X(1092.4f), g.Y(86.5f)); m.add(g.X(1092.4f), g.Y(131.5f)); m.add(g.X(1088.4f), g.Y(131.5f)); m.finish(); return m; }(), body);
 
 	/* top: compass medallion in a hexagonal frame */
-	hex_tile(g, 1128, 52, 54, 52, false);
+	hex_tile_v(g, 1128, 54, 46, 52, false);
 	draw_image(g.c, g.a.compass, g.X(1128 - 19), g.Y(52 - 19), g.L(38), g.L(38),
 	           [&](float px, float py) { return sd_circle(px, py, g.X(1128), g.Y(52), g.L(19)); });
 
@@ -589,7 +620,7 @@ static inline void draw_rail(Ctx &g, State const &st, Hits &hits)
 		float const cy = 115 + float(i) * 70.8f;
 		bool const act = i == st.rail_active;
 		hits.rail[i] = { 1128 - 26, cy - 26, 52, 64 };     /* tile + label */
-		if (act) hex_tile(g, 1128, cy, 52, 50, true); else hex_tile(g, 1128, cy, 48, 46, false);
+		if (act) hex_tile_v(g, 1128, cy, 46, 52, true); else hex_tile_v(g, 1128, cy, 44, 50, false);
 		Rgba const ic = act ? Rgba { 255, 164, 64, 1.0f } : Rgba { 236, 238, 240, 0.96f };
 		switch (i) {
 		case 0: Icon::agents(g, 1128, cy, 1.0f, ic); break;
