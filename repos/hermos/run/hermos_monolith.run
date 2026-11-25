@@ -247,7 +247,7 @@ set browser_dir [cmd_arg --hermos-browser-dir ""]
 set browser_child ""
 set browser_nic ""
 set browser_report ""
-set desktop_preview ""
+set desktop_preview " | preview: yes"
 if {$browser_dir ne ""} {
 	set desktop_preview " | preview: yes"
 	set browser_nic "    + policy | label_prefix: app2 | domain: downlink"
