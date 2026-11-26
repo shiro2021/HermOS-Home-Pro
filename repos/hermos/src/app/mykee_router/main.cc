@@ -147,8 +147,8 @@ namespace {
 			rt.name  = r.value("name",  std::string("?"));
 			rt.url   = r.value("url",   std::string());
 			rt.model = r.value("model", std::string("default"));
-			if (rt.url.compare(0, 8, "https://") != 0) {
-				printf("MyKee: route '%s' is not an https url, skipping\n", rt.name.c_str());
+			if (rt.url.compare(0, 8, "https://") != 0 && rt.url.compare(0, 8, "local://") != 0) {
+				printf("MyKee: route '%s' is neither https nor local, skipping\n", rt.name.c_str());
 				continue;
 			}
 			if (rt.url.empty()) {
@@ -233,17 +233,49 @@ namespace {
 		}
 	}
 
-	/* fallback chain: first route that returns a non-empty completion wins */
-	std::string mykee_route(std::vector<Route> const &routes,
-	                        std::string const &prompt, std::string const &key)
+	/*
+	 * The local model (shiro_brain): "<seq>\n<prompt>" out, "<seq>\n<answer>" back. An answer with another
+	 * sequence number is an old one and is ignored. Empty = no answer (the chain advances).
+	 */
+	std::string local_call(std::string const &prompt)
+	{
+		static unsigned seq = 0;
+		++seq;
+		write_file("/brain/brain_request", std::to_string(seq) + "\n" + prompt);
+
+		for (unsigned waited_ms = 0; waited_ms < 240000; waited_ms += 200) {
+			std::string resp = read_file("/brain/brain_response");
+			trim(resp);
+			size_t const nl = resp.find('\n');
+			if (nl != std::string::npos && resp.compare(0, nl, std::to_string(seq)) == 0) {
+				std::string ans = resp.substr(nl + 1);
+				trim(ans);
+				return ans;
+			}
+			struct timespec const ts = { 0, 200 * 1000 * 1000 };
+			nanosleep(&ts, nullptr);
+		}
+		return std::string();
+	}
+
+	/* fallback chain: first route that returns a non-empty answer wins. Local routes need no key and no TLS;
+	 * https routes need the key and a real entropy source, and are skipped without them. */
+	std::string mykee_route(std::vector<Route> const &routes, std::string const &prompt,
+	                        std::string const &key, bool rng_ok)
 	{
 		for (auto const &r : routes) {
+			bool const local = r.url.compare(0, 8, "local://") == 0;
+			if (!local && (key.empty() || !rng_ok)) {
+				printf("MyKee: skipping '%s' (%s)\n", r.name.c_str(), key.empty() ? "no key" : "no entropy");
+				continue;
+			}
 			printf("MyKee: routing to '%s'\n", r.name.c_str());
-			std::string const out = route_call(r, prompt, key);
+			std::string const out = local ? local_call(prompt) : route_call(r, prompt, key);
 			if (!out.empty()) return out;
 			printf("MyKee: route '%s' failed, advancing\n", r.name.c_str());
 		}
-		return "error: all MyKee routes failed";
+		return key.empty() ? "error: no AI route answered: no local model and no API key in this image (see HERMOS_MYKEE_KEY_FILE)"
+		                   : "error: all MyKee routes failed";
 	}
 
 } /* anonymous namespace */
@@ -300,9 +332,7 @@ void Libc::Component::construct(Libc::Env &env)
 				printf("MyKee: request %s (%u bytes): [%s]\n", log_safe(seq, 12).c_str(), (unsigned)prompt.size(),
 				       log_safe(prompt).c_str());
 
-				std::string const out = !rng_ok     ? "error: no entropy source; MyKee will not open a TLS connection"
-				                      : key.empty() ? "error: no API key in this image (see HERMOS_MYKEE_KEY_FILE)"
-				                      :               mykee_route(routes, prompt, key);
+				std::string const out = mykee_route(routes, prompt, key, rng_ok);
 				printf("MyKee: response (%u bytes): [%s]\n", (unsigned)out.size(), log_safe(out).c_str());
 
 				write_file("/mykee/mykee_response", seq + "\n" + out);

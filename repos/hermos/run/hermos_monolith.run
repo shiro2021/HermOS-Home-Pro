@@ -30,7 +30,7 @@ import_from_depot [depot_user]/pkg/[drivers_interactive_pkg] \
                   [depot_user]/src/fs_rom \
                   [depot_user]/src/posix
 
-build {
+set hermos_build {
 	core init lib/ld
 	app/desktop_builder driver/framebuffer/hermos_fb
 	app/hermes_agent_cpp
@@ -50,6 +50,9 @@ build {
 	server/part_block lib/vfs_rump server/tar_rom
 	test/nitpicker
 }
+set brain_model [cmd_arg --hermos-brain-model ""]
+if {$brain_model ne ""} { lappend hermos_build app/shiro_brain lib/llama }
+build $hermos_build
 
 set hermos_config {
 config
@@ -132,6 +135,7 @@ config
     + policy | label: hermes_agent -> ui_intent     | report: desktop_builder -> ui_intent
     + policy | label: desktop_builder -> ai_command | report: hermes_agent -> ai_command
     + policy | label: mykee_router -> mykee_request   | report: hermes_agent -> mykee_request
+@BRAIN_POLICY@
     + policy | label: hermes_agent -> mykee_response  | report: mykee_router -> mykee_response
     + policy | label: desktop_builder -> theme_state | report: desktop_builder -> theme_state
     + policy | label: desktop_builder -> ahci_ports | report: drivers -> ahci -> ports
@@ -233,6 +237,7 @@ config
   + binary mykee_router
   + route
     + service ROM | label: mykee_request | + child report_rom
+@BRAIN_ROUTER_ROUTE@
     + service Report | + child report_rom
     + service ROM | label_suffix: .lib.so | + parent
     + service Timer | + child timer
@@ -255,12 +260,15 @@ config
         + dir ssl
           + rom | name: ca-bundle.crt | binary: no
       + dir config
-        + inline mykee.conf | : {"routes":[{"name":"master-proxy","url":"https://api.deepseek.com/chat/completions","model":"deepseek-chat"}]}
+        + inline mykee.conf | : {"routes":[@MYKEE_LOCAL_ROUTE@{"name":"master-proxy","url":"https://api.deepseek.com/chat/completions","model":"deepseek-chat"}]}
       + dir ai
         + rom | name: mykee.key | binary: no
       + dir mykee
         + rom | name: mykee_request | label: mykee_request | binary: no
         + report | name: mykee_response | label: mykee_response | buffer: 8192
+@BRAIN_ROUTER_VFS@
+
+@BRAIN_CHILD@
 
 + start apps | caps: 6000 | ram: 256M
   + binary init
@@ -346,8 +354,45 @@ if {$browser_dir ne ""} {
     + env | name: QT_QPA_PLATFORM | value: genode
 }
 }
+#
+# Shiro Brain (local model). Only when a GGUF file is given with --hermos-brain-model: the model is a boot
+# module, the component gets its size plus room for the context, and MyKee tries the local route first.
+#
+set brain_child ""; set brain_policy ""; set brain_route ""; set brain_vfs ""; set brain_local_route ""
+if {$brain_model ne ""} {
+	set brain_ram [expr {[file size $brain_model] / 1048576 + 640}]
+	set brain_policy "    + policy | label: shiro_brain -> brain_request | report: mykee_router -> brain_request\n    + policy | label: mykee_router -> brain_response | report: shiro_brain -> brain_response"
+	set brain_route "    + service ROM | label: brain_response | + child report_rom"
+	set brain_vfs "      + dir brain\n        + report | name: brain_request | label: brain_request | buffer: 8192\n        + rom | name: brain_response | label: brain_response | binary: no"
+	set brain_local_route {{"name":"shiro-local","url":"local://shiro"},}
+	set brain_child "+ start shiro_brain | caps: 1500 | ram: ${brain_ram}M
+  + binary shiro_brain
+  + route
+    + service ROM | label: brain_request | + child report_rom
+    + service Report | + child report_rom
+    + service ROM | label_suffix: .lib.so | + parent
+    + service Timer | + child timer
+    + any-service | + parent
+  + config
+    + libc | stdout: /dev/log | stderr: /dev/log | pipe: /pipe
+    + vfs
+      + dir dev
+        + log
+        + null
+      + dir pipe
+        + pipe
+      + dir model
+        + rom | name: shiro.gguf
+      + dir brain
+        + rom | name: request | label: brain_request | binary: no
+        + report | name: response | label: brain_response | buffer: 16384
+"
+}
+
 install_config [string map [list @BROWSER_CHILD@ $browser_child @BROWSER_NIC@ $browser_nic \
-                                 @BROWSER_REPORT@ $browser_report @DESKTOP_PREVIEW@ $desktop_preview] $hermos_config]
+                                 @BROWSER_REPORT@ $browser_report @DESKTOP_PREVIEW@ $desktop_preview \
+                                 @BRAIN_POLICY@ $brain_policy @BRAIN_ROUTER_ROUTE@ $brain_route @BRAIN_ROUTER_VFS@ $brain_vfs \
+                                 @MYKEE_LOCAL_ROUTE@ $brain_local_route @BRAIN_CHILD@ $brain_child] $hermos_config]
 
 #
 # drivers subsystem: the interactive driver stack without block/network.
@@ -624,6 +669,10 @@ if {$browser_dir ne ""} {
 		exec cp -f $f bin/$n
 		lappend boot_modules $n
 	}
+}
+if {$brain_model ne ""} {
+	exec cp -f $brain_model bin/shiro.gguf
+	lappend boot_modules shiro.gguf
 }
 build_boot_image $boot_modules
 

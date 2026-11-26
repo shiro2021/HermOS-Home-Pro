@@ -9,14 +9,15 @@ LIBS += libc libm stdcxx
 
 # every file below keeps a unique base name; the five wrappers sit in LLAMA_REP_DIR
 SRC_C  := w_ggml_c.c w_ggml_cpu_c.c w_x86_quants.c ggml-alloc.c ggml-quants.c quants.c
-SRC_CC := w_x86_repack.cpp w_model_llama.cpp w_ggml_cpp.cpp w_ggml_cpu_cpp.cpp ggml-backend.cpp ggml-backend-reg.cpp \
+SRC_CC := w_x86_repack.cpp w_model_llama.cpp w_llama_cpp.cpp w_stubs.cpp w_backend_reg.cpp w_ggml_cpp.cpp w_ggml_cpu_cpp.cpp ggml-backend.cpp \
+          tiled.cpp tiled-kernel.cpp \
           ggml-backend-meta.cpp ggml-opt.cpp ggml-threading.cpp gguf.cpp \
           repack.cpp traits.cpp binary-ops.cpp unary-ops.cpp vec.cpp ops.cpp hbm.cpp \
           cpu-feats.cpp \
           $(filter-out llama.cpp,$(notdir $(wildcard $(LLAMA_PORT_DIR)/src/*.cpp))) \
           $(notdir $(filter-out %/llama.cpp,$(wildcard $(LLAMA_PORT_DIR)/src/models/*.cpp)))
 
-INC_DIR += $(LLAMA_REP_DIR) $(LLAMA_PORT_DIR)/ggml/src $(LLAMA_PORT_DIR)/ggml/src/ggml-cpu \
+INC_DIR += $(LLAMA_REP_DIR) $(LLAMA_PORT_DIR) $(LLAMA_PORT_DIR)/ggml/src $(LLAMA_PORT_DIR)/ggml/src/ggml-cpu \
            $(LLAMA_PORT_DIR)/src $(LLAMA_PORT_DIR)/include $(LLAMA_PORT_DIR)/ggml/include
 
 # the generic (non-SIMD) kernels run everywhere; SIMD is enabled per CPU later
@@ -31,6 +32,7 @@ vpath w_%.c    $(LLAMA_REP_DIR)
 vpath w_%.cpp  $(LLAMA_REP_DIR)
 vpath %.c      $(LLAMA_PORT_DIR)/ggml/src $(LLAMA_PORT_DIR)/ggml/src/ggml-cpu
 vpath %.cpp    $(LLAMA_PORT_DIR)/ggml/src $(LLAMA_PORT_DIR)/ggml/src/ggml-cpu $(LLAMA_PORT_DIR)/ggml/src/ggml-cpu/arch/x86 \
+               $(LLAMA_PORT_DIR)/ggml/src/ggml-cpu/tiled \
                $(LLAMA_PORT_DIR)/src $(LLAMA_PORT_DIR)/src/models
 
 SHARED_LIB = yes

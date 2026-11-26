@@ -36,6 +36,19 @@ Already carried over from V4 in V7: MyKee router, retrieval, Capability Broker, 
   build. Clean Room rule: the Builder never receives decompiled code, only the Observer's behaviour spec.
 * **Routing**: MyKee tries the local route first, then the cloud routes. One request format for both.
 
+## B-status
+
+| Step | State |
+|---|---|
+| B1 llama.cpp port + Genode library (`ports/llama.port`, `lib/mk/llama.mk`) | DONE: builds and links |
+| B2 `shiro_brain` component | DONE: loads a GGUF through the VFS and generates on NOVA (tested with a random dummy model, which produces meaningless text) |
+| B3 MyKee local route | DONE: `local://shiro` is tried before the cloud; tested end to end (command bar, agent, router, brain, answer) |
+| B4 corpus and system prompt | TO DO |
+| B5 real model | BLOCKED: needs a base GGUF; none is available in the build environment |
+
+Build with a model: `HERMOS_BRAIN_MODEL=/path/model.gguf tools/build-hermos-v5.sh OUT`. Without it the image is unchanged.
+`tools/shiro-brain/make_dummy_model.py` writes the random test model.
+
 ## C. Order of work (one step at a time)
 
 B1 port llama.cpp to Genode (compile) -> B2 `shiro_brain` component with a tiny test model (plumbing only)
