@@ -105,6 +105,10 @@ function carries one of these marks:
 | Kill Mode (Meta+K, from V4): closes the active Cell at once, destroys its sandbox and returns the quota | BUILT | |
 | Maximize button toggles: a second press restores the Cell | BUILT | Hosted Cells have no undo control; a maximized Terminal could not go back before. |
 | Files: use-after-free on folder navigation and Quick Access hit-test offset (from V4) | BUILT | |
+| Shiro Brain: a local language model (llama.cpp on Genode) that answers questions about HermOS offline from a knowledge base | BUILT | Optional: `HERMOS_BRAIN_MODEL=<gguf> tools/build-hermos-v5.sh`. The image needs 2 GB RAM or more with it. Without a model the image is unchanged. |
+| Shiro Brain knowledge base: 203 facts built from the status table, the design docs, curated facts and the component headers; retrieval (BM25 with stopwords and plurals) feeds the facts to the model | VERIFIED | Built into the image by `tools/shiro-brain/build_kb.py`. Updating the docs updates what it knows. |
+| Shiro-Mini (the shipped model): 4.2 million parameters, trained from scratch here to answer from the retrieved facts; answers are copied from the facts, so they cannot be garbled | VERIFIED | Scores 27/40 on loosely worded questions it was not trained on (the first stand-in scored 14/40). It does not reason; a wrong fact can be chosen; a question the facts do not cover may get a loosely related fact. Replaceable by a larger base model without other changes. |
+| Component proposals: the brain writes a minimal component, the Forge checks it (paths, files, manifest, libraries, banned calls, the word window), the name comes from the request | VERIFIED | Boot-tested: "Create a component named stopwatch." gives three files that pass. It writes a skeleton only, and nothing is stored: no Vault, no approval step yet. |
 | Agent HTTP status page on port 80 | BUILT | Listens (logged). The router has no forward for it, so it is reachable only from inside. |
 | Hermes Core Director, workers, procedure registry | SOURCE ONLY | Part of `hermos_desktop.run`, not the V5 image. |
 | Nitpicker shell, installer UI/executor, test clients | SOURCE ONLY | Same. |

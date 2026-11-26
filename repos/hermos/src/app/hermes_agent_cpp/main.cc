@@ -123,7 +123,9 @@ namespace {
 	{
 		enum { MAX_REQ = 6000 };
 		if (!g_indexed) return prompt;
-		auto const hits = g_index.search(prompt, 3);
+		auto hits = g_index.search(prompt, 3);
+		/* a fact that shares almost nothing with the question is noise (scores of real matches start near 3.6) */
+		hits.erase(std::remove_if(hits.begin(), hits.end(), [](std::pair<size_t, double> const &h) { return h.second < 3.0; }), hits.end());
 		if (hits.empty()) return prompt;
 
 		std::string ctx = "Context (from the HermOS docs):\n";
@@ -253,7 +255,7 @@ void Libc::Component::construct(Libc::Env &env)
 					printf("HermOS: AI response (%u bytes): [%s]\n", (unsigned)ai.size(), log_safe(ai).c_str());
 					write_file("/ai/ai_command", ai);
 					seq = 0;
-				} else if ((waited_ms += 200) >= 300000) {
+				} else if ((waited_ms += 200) >= 960000) {
 					write_file("/ai/ai_command", "error: the AI router did not answer in time");
 					seq = 0;
 				}

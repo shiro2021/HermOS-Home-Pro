@@ -131,7 +131,7 @@ struct CmdBar
 /* what the desktop really knows about the system (filled by desktop_builder) */
 struct SysInfo
 {
-	char version[56]  { "HermOS V7" };
+	char version[56]  { "HermOS V8" };
 	char kernel[56]   { "" };
 	char uptime[32]   { "" };
 	char memory[64]   { "" };

@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "llama.h"
+#include "shiro_decode.h"
 
 namespace {
 
@@ -67,6 +68,45 @@ namespace {
 
 	enum { N_CTX = 2048, N_PREDICT = 640, N_THREADS = 2 };
 
+	/*
+	 * A proposed component names itself in every file. The small model cannot reliably copy an unfamiliar name
+	 * from the request, so the name the user asked for is put in place of whatever the model wrote: the word
+	 * after "named" or "called" (or "component"), lower-case, a-z 0-9 and _, 2 to 32 characters.
+	 */
+	std::string requested_name(std::string const &request)
+	{
+		std::string lower = request;
+		for (auto &c : lower) if (c >= 'A' && c <= 'Z') c = char(c + 32);
+		static char const *const keys[] = { " named ", " called ", " component " };
+		for (char const *k : keys) {
+			size_t p = lower.find(k);
+			if (p == std::string::npos) continue;
+			p += std::strlen(k);
+			std::string n;
+			while (p < lower.size() && ((lower[p] >= 'a' && lower[p] <= 'z') || (lower[p] >= '0' && lower[p] <= '9') || lower[p] == '_')) n += lower[p++];
+			if (n.size() >= 2 && n.size() <= 32 && n != "named" && n != "called" && n != "for") return n;
+		}
+		return std::string();
+	}
+
+	std::string fill_component_name(std::string const &proposal, std::string const &request)
+	{
+		static char const open[] = "<file path=\"src/app/";
+		size_t const a = proposal.find(open);
+		std::string const want = requested_name(request);
+		if (a == std::string::npos || want.empty()) return proposal;
+		size_t const s0 = a + sizeof(open) - 1, e0 = proposal.find('/', s0);
+		if (e0 == std::string::npos) return proposal;
+		std::string const have = proposal.substr(s0, e0 - s0);
+		if (have.empty() || have == want) return proposal;
+		std::string out; size_t pos = 0;
+		for (size_t f = proposal.find(have); f != std::string::npos; f = proposal.find(have, pos)) {
+			out.append(proposal, pos, f - pos); out += want; pos = f + have.size();
+		}
+		out.append(proposal, pos, std::string::npos);
+		return out;
+	}
+
 	void set_tokens(llama_batch_ext *batch, llama_token const *tokens, int32_t n, llama_pos pos0)
 	{
 		llama_batch_ext_clear(batch);
@@ -105,6 +145,7 @@ namespace {
 		llama_context *ctx   { nullptr };
 		llama_sampler *smpl  { nullptr };
 		llama_vocab const *vocab { nullptr };
+		Shiro::Decoder dec;           /* facts-and-question models: constrained copying (see shiro_decode.h) */
 		std::string    tmpl;
 		std::string    prompt_fmt;   /* optional /model/prompt.txt: the user text goes where {} stands */
 		std::string    system_text;  /* optional /model/system.txt: said once before every request */
@@ -125,7 +166,8 @@ namespace {
 
 			llama_context_params cp = llama_context_default_params();
 			cp.n_ctx           = N_CTX;
-			cp.n_batch         = 512;
+			cp.n_batch         = 1024;      /* a prompt with two facts is about 900 tokens */
+			cp.n_ubatch        = 1024;
 			cp.n_threads       = N_THREADS;
 			cp.n_threads_batch = N_THREADS;
 			cp.no_perf         = true;
@@ -137,6 +179,7 @@ namespace {
 			smpl = llama_sampler_chain_init(sp);
 			llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
 
+			dec.model = model; dec.ctx = ctx; dec.vocab = vocab; dec.init();
 			if (char const *t = llama_model_chat_template(model, nullptr)) tmpl = t;
 			prompt_fmt  = read_file("/model/prompt.txt");
 			system_text = read_file("/model/system.txt");
@@ -163,6 +206,9 @@ namespace {
 
 		std::string answer(std::string const &user)
 		{
+			/* a facts-and-question model: the shaped prompt is decoded by copying from its facts */
+			if (!prompt_fmt.empty()) return dec.answer(user, 700, N_CTX - 16);
+
 			std::string const prompt = format(user);
 
 			int const n_tok = -llama_tokenize(vocab, prompt.c_str(), (int32_t)prompt.size(), nullptr, 0, true, true);
@@ -249,7 +295,9 @@ void Libc::Component::construct(Libc::Env &env)
 					static char const head[] = "Context (from the HermOS docs):\n", marker[] = "answer the user's question: ";
 					size_t const m = question.rfind(marker);
 					if (m != std::string::npos) {
-						std::string const ctx = question.substr(0, m);
+						std::string ctx = question.substr(0, m);
+						size_t const tail = ctx.rfind("\n\nUsing the context above");
+						if (tail != std::string::npos) ctx.erase(tail);
 						question = question.substr(m + sizeof(marker) - 1);
 						size_t pos = ctx.find(head) == std::string::npos ? 0 : ctx.find(head) + sizeof(head) - 1;
 						while (pos < ctx.size() && facts.size() < 2) {
@@ -272,6 +320,8 @@ void Libc::Component::construct(Libc::Env &env)
 					    (lower.compare(0, 6, "create") == 0 || lower.compare(0, 4, "make") == 0 || lower.compare(0, 5, "write") == 0 ||
 					     lower.compare(0, 3, "new") == 0 || lower.compare(0, 6, "i need") == 0);
 					if (create) facts.clear();
+					/* nothing retrieved and not a creation request: the knowledge base has nothing on it */
+					if (facts.empty() && !create) shaped = std::string("C: ") + Shiro::UNKNOWN_SENTENCE + "\n";
 
 					for (auto &f : facts) {                      /* the same cut as in training: at most 300 characters */
 						if (f.size() > 300) {
@@ -283,7 +333,8 @@ void Libc::Component::construct(Libc::Env &env)
 					}
 					shaped += "Q: " + question + "\nA:";
 				}
-				std::string const out = brain.answer(brain.prompt_fmt.empty() ? question : shaped);
+				std::string out = brain.answer(brain.prompt_fmt.empty() ? question : shaped);
+				if (!brain.prompt_fmt.empty()) out = fill_component_name(out, question);
 				printf("Shiro Brain: answer (%u bytes): [%s]\n", (unsigned)out.size(), log_safe(out).c_str());
 
 				write_file("/brain/response", seq + "\n" + sanitize(out));

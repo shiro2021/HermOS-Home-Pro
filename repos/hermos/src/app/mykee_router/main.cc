@@ -243,7 +243,7 @@ namespace {
 		++seq;
 		write_file("/brain/brain_request", std::to_string(seq) + "\n" + prompt);
 
-		for (unsigned waited_ms = 0; waited_ms < 240000; waited_ms += 200) {
+		for (unsigned waited_ms = 0; waited_ms < 900000; waited_ms += 200) {
 			std::string resp = read_file("/brain/brain_response");
 			trim(resp);
 			size_t const nl = resp.find('\n');

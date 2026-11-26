@@ -3,7 +3,10 @@
 Score the Shiro Brain pipeline on eval_questions.txt: retrieval (the agent's BM25), the prompt the brain
 builds, and the model (host llama-completion).
 
-  eval_model.py MODEL.gguf LLAMA_COMPLETION KB.json [N_PREDICT]
+  eval_model.py MODEL.gguf SHIRO_ASK KB.json
+
+SHIRO_ASK is the host tool built from shiro_ask.cc (same decoder as the on-device brain):
+  g++ -std=c++17 -O2 -I llama.cpp/include -I llama.cpp/ggml/include tools/shiro-brain/shiro_ask.cc -o shiro_ask -L<llama build>/bin -lllama -lggml -lggml-base -lggml-cpu
 
 An answer counts as correct when it contains every keyword of its line. The questions are loosely worded and
 are not in the training data. Prints each miss, the retrieval hit-rate and the score.
@@ -14,7 +17,6 @@ sys.path.insert(0, here + "/../../repos/hermos/tools/shiro-brain")
 import shiro_lib
 
 model, exe, kb_path = sys.argv[1], sys.argv[2], sys.argv[3]
-n = sys.argv[4] if len(sys.argv) > 4 else "160"
 kb = json.load(open(kb_path, encoding="utf-8"))
 chunks = [it["text"] for it in kb]
 index = shiro_lib.Index(chunks)
@@ -29,10 +31,7 @@ for line in open(f"{here}/eval_questions.txt", encoding="utf-8"):
     ctx = [chunks[i] for i in hits]
     retrieved = all(any(k in c.lower() for c in ctx) for k in kws)
     prompt = shiro_lib.prompt(q, ctx)
-    out = subprocess.run([exe, "-m", model, "-p", prompt, "-n", n, "--no-warmup", "-no-cnv", "--temp", "0"],
-                         capture_output=True, text=True, timeout=600).stdout
-    ans = out[len(prompt):] if out.startswith(prompt) else out.rsplit("A:", 1)[-1]
-    ans = ans.split("[end of text]")[0].strip()
+    ans = subprocess.run([exe, model], input=prompt, capture_output=True, text=True, timeout=600).stdout.strip()
     hit = all(k in ans.lower() for k in kws)
     total += 1; ok += hit; ret_ok += retrieved
     if not hit:

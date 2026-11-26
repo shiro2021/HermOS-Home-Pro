@@ -40,7 +40,7 @@ for line in txt.splitlines():
             items.append({"text": cut(f"{f}: {st}." + (f" {note}" if note else "")), "questions": [t.format(f=f) for t in TEMPL]})
 
 # 3. prose of the design documents: heading + first paragraph
-for name in ("DESIGN.md", "SCENE.md", "HERMES_DIRECTOR.md", "INSTALLER.md", "BUILD.md", "HARDWARE_SUPPORT.md", "ROADMAP_V7.md"):
+for name in ("DESIGN.md", "SCENE.md", "HERMES_DIRECTOR.md", "INSTALLER.md", "BUILD.md", "HARDWARE_SUPPORT.md"):
     p = f"{repo}/doc/{name}"
     if not os.path.exists(p): continue
     heading, para, fence = None, [], False
