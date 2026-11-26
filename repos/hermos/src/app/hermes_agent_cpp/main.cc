@@ -1,11 +1,14 @@
 /*
  * HermOS AI agent — native C++ implementation (Plan B).
  *
- * A standard Genode *libc* component.  IPC and networking all go through the
- * VFS/libc:
+ * A standard Genode *libc* component.  IPC all goes through the VFS/libc:
  *
  *   * `ui_intent` (the user prompt) arrives as a ROM at `/ui/ui_intent`;
- *   * the DeepSeek response is posted with libcurl over the lwip socket;
+ *   * Shiro Local Brain (BM25 retrieval over the HermOS docs) adds context to it;
+ *   * the augmented prompt goes to the MyKee router as `/mykee/mykee_request`
+ *     ("<seq>\n<prompt>") and its answer returns as `/mykee/mykee_response`
+ *     ("<seq>\n<answer>"). The TLS client and the API key live ONLY in the router;
+ *     this agent also serves the status page on :80 and never sees the key;
  *   * the reply is written to `/ai/ai_command` (a `<report>` node) which
  *     submits a report back to `desktop_builder` via `report_rom`.
  */
@@ -28,11 +31,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
-/* HTTP + JSON */
-#include <curl/curl.h>
-#include <nlohmann/json.hpp>
-
-using nlohmann::json;
+#include "shiro_rag.h"
 
 namespace {
 
@@ -83,50 +82,6 @@ namespace {
 	}
 
 	/*
-	 * TLS draws its randomness from /dev/random. A constant or repeating source makes the
-	 * session keys predictable, so the agent checks it once at start and refuses to talk
-	 * to the network service if it is not varying. The two samples come from two separate
-	 * opens: a fixed file hands out the next bytes on one descriptor (so two reads differ),
-	 * but starts again from the beginning on every open, while a real source never repeats.
-	 */
-	bool entropy_ok()
-	{
-		unsigned char a[32] = { }, b[32] = { };
-
-		int fd = open("/dev/random", O_RDONLY);
-		if (fd < 0) return false;
-		ssize_t const na = read(fd, a, sizeof(a));
-		close(fd);
-
-		fd = open("/dev/random", O_RDONLY);
-		if (fd < 0) return false;
-		ssize_t const nb = read(fd, b, sizeof(b));
-		close(fd);
-
-		if (na != (ssize_t)sizeof(a) || nb != (ssize_t)sizeof(b)) return false;
-
-		bool varied = false;
-		for (unsigned i = 0; i < sizeof(a); i++) if (a[i] != a[0]) varied = true;
-		return varied && memcmp(a, b, sizeof(a)) != 0;
-	}
-
-	/*
-	 * An API key is one token of URL-safe characters. Anything else (a placeholder sentence, a
-	 * file with spaces or control characters) is not a key and must never be sent as a bearer
-	 * credential.
-	 */
-	bool key_plausible(std::string const &k)
-	{
-		if (k.size() < 16 || k.size() > 256) return false;
-		for (char const ch : k) {
-			bool const ok = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
-			                (ch >= '0' && ch <= '9') || ch == '-' || ch == '_' || ch == '.';
-			if (!ok) return false;
-		}
-		return true;
-	}
-
-	/*
 	 * Text for the log: control characters replaced, length limited. Prompts are private and
 	 * replies are untrusted, so the log only gets a short, printable excerpt and the length.
 	 */
@@ -141,85 +96,37 @@ namespace {
 		return out;
 	}
 
-	/* libcurl write callback: accumulate the body into a std::string */
-	size_t write_cb(char *ptr, size_t size, size_t nmemb, void *userdata)
+	/* ---- Shiro Local Brain: BM25 index over the HermOS docs ---- */
+	shiro_rag::Index g_index;
+	bool             g_indexed = false;
+
+	void build_index()
 	{
-		auto *out = static_cast<std::string *>(userdata);
-		enum { MAX_BODY = 1 << 20 };               /* a reply never needs more than 1 MiB */
-		if (out->size() + size * nmemb > MAX_BODY) return 0;   /* aborts the transfer */
-		out->append(ptr, size * nmemb);
-		return size * nmemb;
+		std::string const corpus = read_file("/corpus/shiro_corpus.txt");
+		if (corpus.empty()) { printf("Shiro: no corpus at /corpus/shiro_corpus.txt\n"); return; }
+		g_index.add(corpus);
+		g_indexed = true;
+		printf("Shiro: indexed corpus (%zu chunks)\n", g_index.size());
 	}
 
-	/*
-	 * POST a prompt to the DeepSeek chat-completions API and return the
-	 * assistant message content (choices[0].message.content).
-	 */
-	std::string deepseek_call(std::string const &prompt, std::string const &api_key)
+	/* the retrieved chunks are context for the model; the request report holds 8 KiB */
+	std::string augment_prompt(std::string const &prompt)
 	{
-		json req;
-		req["model"] = "deepseek-chat";
-		req["messages"] = json::array();
-		req["messages"].push_back({ { "role", "user" }, { "content", prompt } });
-		req["stream"] = false;
-		std::string const body = req.dump();
+		enum { MAX_REQ = 6000 };
+		if (!g_indexed) return prompt;
+		auto const hits = g_index.search(prompt, 3);
+		if (hits.empty()) return prompt;
 
-		curl_slist *headers = nullptr;
-		headers = curl_slist_append(headers, "Content-Type: application/json");
-		std::string const auth = "Authorization: Bearer " + api_key;
-		headers = curl_slist_append(headers, auth.c_str());
-
-		std::string response;
-
-		CURL *c = curl_easy_init();
-		if (!c) {
-			curl_slist_free_all(headers);
-			return "error: curl_easy_init failed";
+		std::string ctx = "Context (from the HermOS docs):\n";
+		for (auto const &h : hits) {
+			std::string const c = g_index.chunk(h.first);
+			if (ctx.size() + c.size() + prompt.size() + 80 > (size_t)MAX_REQ) break;
+			ctx += "- "; ctx += c; ctx += "\n";
 		}
-
-		curl_easy_setopt(c, CURLOPT_URL, "https://api.deepseek.com/chat/completions");
-		curl_easy_setopt(c, CURLOPT_POST, 1L);
-		curl_easy_setopt(c, CURLOPT_POSTFIELDS, body.c_str());
-		curl_easy_setopt(c, CURLOPT_POSTFIELDSIZE, static_cast<long>(body.size()));
-		curl_easy_setopt(c, CURLOPT_HTTPHEADER, headers);
-		/*
-		 * The request carries the API key and the user's prompt: the server certificate must
-		 * be verified (chain to the CA bundle in the image, host name matches), or anyone on the
-		 * network path could read or alter both. No fallback to an unverified connection.
-		 */
-		curl_easy_setopt(c, CURLOPT_SSL_VERIFYPEER, 1L);
-		curl_easy_setopt(c, CURLOPT_SSL_VERIFYHOST, 2L);
-		curl_easy_setopt(c, CURLOPT_CAINFO, "/etc/ssl/ca-bundle.crt");
-		curl_easy_setopt(c, CURLOPT_PROTOCOLS_STR, "https");
-		curl_easy_setopt(c, CURLOPT_REDIR_PROTOCOLS_STR, "https");
-		curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 0L);
-		curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, write_cb);
-		curl_easy_setopt(c, CURLOPT_WRITEDATA, &response);
-		curl_easy_setopt(c, CURLOPT_TIMEOUT, 30L);
-		curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 10L);
-
-		CURLcode const res = curl_easy_perform(c);
-		curl_slist_free_all(headers);
-		curl_easy_cleanup(c);
-
-		if (res != CURLE_OK) {
-			char buf[256];
-			snprintf(buf, sizeof(buf), "error: curl failed: %s",
-			         curl_easy_strerror(res));
-			return std::string(buf);
-		}
-
-		try {
-			json resp = json::parse(response);
-			if (resp.contains("error"))
-				return "API error: " +
-				       resp["error"].value("message", std::string("unknown"));
-			if (!resp.contains("choices") || resp["choices"].empty())
-				return "API error: no choices in response";
-			return resp["choices"][0]["message"]["content"].get<std::string>();
-		} catch (std::exception const &e) {
-			return std::string("error: JSON parse failed: ") + e.what();
-		}
+		if (ctx.size() == std::string("Context (from the HermOS docs):\n").size()) return prompt;
+		ctx += "\nUsing the context above, answer the user's question: ";
+		ctx += prompt;
+		return ctx;
 	}
 
 /* ---- minimal HTTP server (serves the HermOS Server status page) ---- */
@@ -269,6 +176,7 @@ static void httpd_tick()
 			"<p>Kernel: NOVA / Genode 26.08</p>"
 			"<p>Only what runs here is listed.</p><ul>"
 			"<li>hermes-httpd :80 (this page)</li>"
+			"<li>mykee-router (AI gateway, internal)</li>"
 			"</ul><p>served by hermes_agent_cpp over lwIP</p>"
 			"</body></html>";
 		char resp[4096];
@@ -290,46 +198,49 @@ void Libc::Component::construct(Libc::Env &env)
 
 	Libc::with_libc([&]() {
 
-		curl_global_init(CURL_GLOBAL_DEFAULT);
-
-		/* load the DeepSeek API key from the VFS (mounted by the run script) */
-		std::string api_key = read_file("/ai/mykee.key");
-		trim(api_key);
-		bool const key_ok = key_plausible(api_key);
-		if (!key_ok) api_key.clear();
-		printf(key_ok ? "HermOS: API key loaded from /ai/mykee.key\n"
-		              : "HermOS: WARNING: no usable API key at /ai/mykee.key (empty or not a key)\n");
-
-		bool const rng_ok = entropy_ok();
-		printf(rng_ok ? "HermOS: entropy source OK\n"
-		              : "HermOS: ERROR: /dev/random is not random; refusing to use the network service\n");
-
 		printf("HermOS hermes_agent_cpp: waiting for ui_intent...\n");
 
-	httpd_init();
+		httpd_init();
+		build_index();
 
-		std::string last;
+		std::string last_intent;
+		unsigned    last_seq = 0;            /* counts up for the life of the agent: a number is never reused */
+		unsigned    seq = 0;                 /* the request being answered, 0 = none */
+		unsigned    waited_ms = 0;
 
 		for (;;) {
 
 			httpd_tick();
 
-		std::string xml = read_file("/ui/ui_intent");
+			std::string xml = read_file("/ui/ui_intent");
 			trim(xml);
 
-			if (!xml.empty() && xml != last) {
-
-				last = xml;
+			if (!xml.empty() && xml != last_intent) {
+				last_intent = xml;
 
 				std::string const prompt = extract_prompt(xml);
 				printf("HermOS: prompt received (%u bytes): [%s]\n", (unsigned)prompt.size(), log_safe(prompt).c_str());
 
-				std::string const ai = !rng_ok         ? "error: no entropy source; the agent will not open a TLS connection"
-				                     : api_key.empty() ? "error: no API key in this image (see HERMOS_MYKEE_KEY_FILE)"
-				                     :                   deepseek_call(prompt, api_key);
-				printf("HermOS: AI response (%u bytes): [%s]\n", (unsigned)ai.size(), log_safe(ai).c_str());
+				std::string const aug = augment_prompt(prompt);
+				seq = ++last_seq; waited_ms = 0;
+				printf("Shiro: request %u (%u bytes)\n", seq, (unsigned)aug.size());
+				write_file("/mykee/mykee_request", std::to_string(seq) + "\n" + aug);
+			}
 
-				write_file("/ai/ai_command", ai);
+			if (seq) {
+				/* only the answer carrying our sequence number counts; an old one is ignored */
+				std::string resp = read_file("/mykee/mykee_response");
+				trim(resp);
+				size_t const nl = resp.find('\n');
+				if (nl != std::string::npos && resp.compare(0, nl, std::to_string(seq)) == 0) {
+					std::string const ai = resp.substr(nl + 1);
+					printf("HermOS: AI response (%u bytes): [%s]\n", (unsigned)ai.size(), log_safe(ai).c_str());
+					write_file("/ai/ai_command", ai);
+					seq = 0;
+				} else if ((waited_ms += 200) >= 90000) {
+					write_file("/ai/ai_command", "error: the AI router did not answer in time");
+					seq = 0;
+				}
 			}
 
 			struct timespec const ts = { 0, 200 * 1000 * 1000 }; /* 200 ms */

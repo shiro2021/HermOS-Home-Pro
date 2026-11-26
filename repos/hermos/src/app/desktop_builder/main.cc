@@ -37,6 +37,7 @@
 
 #include <hermos_ui/window_geometry.h>
 #include <hermos_ui/cell_session.h>
+#include <hermos_manifest/manifest.h>
 
 #include "scene.h"
 #include "installer_disk.h"
@@ -1640,6 +1641,8 @@ namespace Hermos {
 		static constexpr int MIN_CELL_W = 120, MIN_CELL_H = 90;
 
 		struct Cell_geom { int x, y, w, h; };
+		bool      _maxed[NUM_CELLS]   { };    /* the Cell is maximized (a second press restores it) */
+		Cell_geom _pre_max[NUM_CELLS] { };    /* its geometry before it was maximized */
 		Cell_geom _geom[NUM_CELLS] {
 			{  150, 300, 450, 300 },  /* 0: Welcome          */
 			{  630, 300, 450, 300 },  /* 1: System           */
@@ -2048,9 +2051,44 @@ namespace Hermos {
 			}
 		}
 
+		/*
+		 * Capability Broker (from V4): every app kind has a manifest (what it may reach, what it
+		 * may use). A launch whose manifest does not validate is refused. The manifests state what
+		 * the nested init really grants: the apps sandbox has no network and no block access of
+		 * its own, so every manifest says nic: none, block: none.
+		 */
+		static char const *_manifest_for(App_kind k)
+		{
+			switch (k) {
+			case APP_FILES:
+				return "+ manifest\n name: Files\n kind: system\n + caps\n  vfs: /apps/files,ro\n  nic: none\n  block: none\n  gui: cell\n + quotas\n  ram: 32M\n  cpu: 25";
+			case APP_TERMINAL:
+				return "+ manifest\n name: Terminal\n kind: system\n + caps\n  vfs: /apps/terminal,ro\n  nic: none\n  block: none\n  gui: cell\n + quotas\n  ram: 32M\n  cpu: 25";
+			case APP_TESTNIT:
+				return "+ manifest\n name: TestNit\n kind: system\n + caps\n  vfs: /apps/testnit,ro\n  nic: none\n  block: none\n  gui: cell\n + quotas\n  ram: 16M\n  cpu: 25";
+			default:
+				return nullptr;
+			}
+		}
+
 		/* spawn an app into the first free Cell slot via the nested init */
 		void _launch_app(App_kind kind)
 		{
+			char const *mtxt = _manifest_for(kind);
+			if (!mtxt) { log("HermOS broker: launch REJECTED, no manifest for this app kind"); return; }
+			{
+				Hermos::Manifest m;
+				bool const parsed = Hermos::parse_manifest(mtxt, Genode::strlen(mtxt), m);
+				char reason[128] { };
+				int const code = parsed ? Hermos::validate_manifest(m, reason, sizeof(reason)) : -1;
+				if (code != 0) {
+					log("HermOS broker: launch REJECTED '", _app_binary(kind), "': ",
+					    parsed ? (char const *)reason : "manifest does not parse");
+					return;
+				}
+				log("HermOS broker: manifest ok '", _app_binary(kind), "' nic=", (int)m.nic, " block=",
+				    (int)m.block, " ram=", m.ram_mb, "M cpu=", m.cpu);
+			}
 			int slot = -1;
 			for (int i = 0; i < MAX_APPS; ++i)
 				if (_app_kind[i] == APP_NONE && !_win_open[i]) { slot = i; break; }
@@ -2061,6 +2099,7 @@ namespace Hermos {
 			if (slot < 0) { log("HermOS: all Cell slots busy"); return; }
 			_app_kind[slot] = kind;
 			_win_open[slot] = true;
+			_maxed[slot]    = false;
 
 			/* open large, from the theme: later Cells cascade so none hides another's title */
 			if (_appcell.valid) {
@@ -2090,8 +2129,25 @@ namespace Hermos {
 			if (slot < 0 || slot >= MAX_APPS) return;
 			if (_app_kind[slot] == APP_NONE) return;
 			_app_kind[slot] = APP_NONE;
+			_maxed[slot]    = false;
 			log("HermOS: slot ", slot, " released, init reconfigured (quota returned)");
 			_emit_apps_config();
+		}
+
+		/* Kill Mode (Meta+K, from V4): tear down the focused Cell at once, destroying its sandbox and
+		 * returning its quota. A desktop Cell without an app is just closed. */
+		void _kill_focused()
+		{
+			int idx = -1;                                /* the front-most open Cell is the one in use */
+			for (int oi = NUM_CELLS - 1; oi >= 0 && idx < 0; --oi)
+				if (_win_open[_draw_order[oi]]) idx = _draw_order[oi];
+			if (idx < 0) { log("HermOS kill mode: no open Cell"); return; }
+			_win_open[idx] = false;
+			_gui_root.close_cell(idx);
+			_close_app(idx);
+			_cell_state[idx] = CELL_INACTIVE;
+			_dirty = true;
+			log("HermOS kill mode: Cell ", idx, " killed (sandbox destroyed, quota returned)");
 		}
 
 		/* map a registry stack name to an App_kind */
@@ -3678,8 +3734,15 @@ namespace Hermos {
 						_win_open[idx] = false;
 						log("HermOS cell ", idx, " minimized");
 					} else if (k == Scene::CTRL_MAX) {
-						_geom[idx] = _work_area();
-						log("HermOS cell ", idx, " maximized (client area)");
+						/* a second press puts the Cell back where it was (hosted Cells have no undo control) */
+						if (_maxed[idx]) {
+							_geom[idx] = _pre_max[idx]; _maxed[idx] = false;
+							log("HermOS cell ", idx, " restored");
+						} else {
+							_pre_max[idx] = _geom[idx]; _maxed[idx] = true;
+							_geom[idx] = _work_area();
+							log("HermOS cell ", idx, " maximized (client area)");
+						}
 					} else {   /* undo: back to the theme slot */
 						log("HermOS cell ", idx, " restore");
 						_handle_theme();
@@ -3742,6 +3805,9 @@ namespace Hermos {
 				_render();
 				_dirty = false;
 			} else {
+				/* (from V4) anything that set the dirty flag outside an input event (app output, an AI
+				 * reply, a theme change) is drawn on the next tick, not on the next click */
+				if (_dirty) { _render(); _dirty = false; }
 				if (_scene_ready) {
 					/* Plasma-style panel reveal animation */
 					/* advance by the real elapsed time, not by the tick count, so the
@@ -4107,6 +4173,7 @@ namespace Hermos {
 						case Input::KEY_L:        _sstate.left.toggle();   _dirty = true; return;
 						case Input::KEY_B:        _sstate.bottom.toggle(); _dirty = true; return;
 						case Input::KEY_A:        _sstate.right.toggle();  _dirty = true; return;   /* Agents & Workers */
+						case Input::KEY_K:        _kill_focused();         return;                  /* Kill Mode */
 						case Input::KEY_T:        _toggle_tile();  return;
 						case Input::KEY_LEFT:     _quick_tile(0);  return;
 						case Input::KEY_RIGHT:    _quick_tile(1);  return;

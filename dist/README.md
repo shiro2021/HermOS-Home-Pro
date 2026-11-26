@@ -10,5 +10,7 @@ Test in QEMU (OVMF) with a blank target disk of at least 16 GB:
       -device ahci,id=ahci -drive id=t,file=target.img,format=raw,if=none -device ide-hd,drive=t,bus=ahci.0 \
       -drive id=cd,file=HermOS-V6-installer.iso,if=none,media=cdrom,readonly=on -device ide-cd,drive=cd,bus=ahci.1 -boot d
 
-Installing erases the selected disk. Known gaps: no HermOS boot screen, installer still the flat style,
+Installing erases the selected disk. Includes the V4 work (MyKee router, Shiro Local Brain, Capability Broker, Kill Mode Meta+K). The image carries no AI key: build with `HERMOS_MYKEE_KEY_FILE=<file>` to enable the AI.
+
+Known gaps: no HermOS boot screen, installer still the flat style,
 rail tiles do not switch yet, rail icons are generic.

@@ -184,12 +184,15 @@ class FileManager
 		/* walk the directory at `path` (absolute) and populate the entry list */
 		void scan_directory(char const *path)
 		{
+			/* copy the path BEFORE the entries are freed: the caller may pass a pointer into one of
+			 * them (use-after-free on folder navigation) */
+			Directory::Path p(path);
+
 			while (FileEntry *e = _entries.first()) {
 				_entries.remove(e);
 				_alloc.free(e, sizeof(FileEntry));
 			}
 
-			Directory::Path p(path);
 			if (_dir.directory_exists(p)) _cwd = p;
 
 			Directory sub(_dir, _cwd);
@@ -770,9 +773,9 @@ void Main::_handle_input()
 				}
 				_menu_open = -1; _render(); return;
 			}
-			/* left sidebar (Quick Access) */
-			if (_in(_mx, _my, 0, menu_h(), side_w(), 3 * 30)) {
-				int const idx = (_my - menu_h()) / 30;
+			/* left sidebar (Quick Access): the items are drawn at menu_h()+26+i*30, below the label band */
+			if (_in(_mx, _my, 0, menu_h() + 26, side_w(), 3 * 30)) {
+				int const idx = (_my - menu_h() - 26) / 30;
 				static char const *q[3] = { "/Home", "/Home/Documents", "/Home/Downloads" };
 				_files.scan_directory(q[idx]); _selected = nullptr; _render(); return;
 			}
