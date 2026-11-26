@@ -24,3 +24,7 @@ dep/
 # QEMU / test artifacts
 artifacts/
 *.serial.log
+
+# Python bytecode
+__pycache__/
+*.pyc
