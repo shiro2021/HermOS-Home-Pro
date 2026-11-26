@@ -78,6 +78,27 @@ namespace {
 		llama_batch_ext_set_output_logits(batch, n - 1, true);
 	}
 
+	/* llama.cpp logs hundreds of lines while loading; only warnings and errors reach the serial log */
+	void quiet_log(ggml_log_level level, char const *text, void *)
+	{
+		if (level == GGML_LOG_LEVEL_ERROR || level == GGML_LOG_LEVEL_WARN) fputs(text, stdout);
+	}
+
+	/* the reply goes to the UI as text: keep valid UTF-8, replace anything else */
+	std::string sanitize(std::string const &in)
+	{
+		std::string out;
+		for (size_t i = 0; i < in.size();) {
+			unsigned char const c = static_cast<unsigned char>(in[i]);
+			size_t len = c < 0x80 ? 1 : (c >> 5) == 0x6 ? 2 : (c >> 4) == 0xe ? 3 : (c >> 3) == 0x1e ? 4 : 0;
+			bool ok = len > 0 && i + len <= in.size();
+			for (size_t k = 1; ok && k < len; ++k) ok = (static_cast<unsigned char>(in[i + k]) & 0xc0) == 0x80;
+			if (ok && (c >= 0x20 || c == '\n' || c == '\t')) { out.append(in, i, len); i += len; }
+			else { if (c == '\r') {} else out += '?'; i += 1; }
+		}
+		return out;
+	}
+
 	struct Brain
 	{
 		llama_model   *model { nullptr };
@@ -85,9 +106,12 @@ namespace {
 		llama_sampler *smpl  { nullptr };
 		llama_vocab const *vocab { nullptr };
 		std::string    tmpl;
+		std::string    prompt_fmt;   /* optional /model/prompt.txt: the user text goes where {} stands */
+		std::string    system_text;  /* optional /model/system.txt: said once before every request */
 
 		bool load(char const *path)
 		{
+			llama_log_set(quiet_log, nullptr);
 			llama_backend_init();
 
 			llama_model_params mp = llama_model_default_params();
@@ -114,13 +138,21 @@ namespace {
 			llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
 
 			if (char const *t = llama_model_chat_template(model, nullptr)) tmpl = t;
+			prompt_fmt  = read_file("/model/prompt.txt");
+			system_text = read_file("/model/system.txt");
 			return true;
 		}
 
 		/* apply the model's chat template to one user message; plain prompt if it has none */
 		std::string format(std::string const &user) const
 		{
-			if (tmpl.empty()) return user;
+			if (tmpl.empty()) {
+				/* a model without a chat template: system text, then the format with the user text in it */
+				std::string f = prompt_fmt.empty() ? std::string("{}") : prompt_fmt;
+				size_t const p = f.find("{}");
+				if (p != std::string::npos) f.replace(p, 2, user);
+				return system_text.empty() ? f : system_text + f;
+			}
 			llama_chat_message const msg { "user", user.c_str() };
 			std::vector<char> buf(user.size() * 2 + 1024);
 			int n = llama_chat_apply_template(tmpl.c_str(), &msg, 1, true, buf.data(), (int32_t)buf.size());
@@ -210,7 +242,7 @@ void Libc::Component::construct(Libc::Env &env)
 				std::string const out = brain.answer(prompt);
 				printf("Shiro Brain: answer (%u bytes): [%s]\n", (unsigned)out.size(), log_safe(out).c_str());
 
-				write_file("/brain/response", seq + "\n" + out);
+				write_file("/brain/response", seq + "\n" + sanitize(out));
 			}
 
 			struct timespec const ts = { 0, 200 * 1000 * 1000 };

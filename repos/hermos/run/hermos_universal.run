@@ -269,14 +269,19 @@ config
 # Shiro Brain (local model). Only when a GGUF file is given with --hermos-brain-model: the model is a boot
 # module, the component gets its size plus room for the context, and MyKee tries the local route first.
 #
-set brain_child ""; set brain_policy ""; set brain_route ""; set brain_vfs ""; set brain_local_route ""
+set brain_extra_vfs ""; set brain_child ""; set brain_policy ""; set brain_route ""; set brain_vfs ""; set brain_local_route ""
 if {$brain_model ne ""} {
+	# optional text files next to the model: X.gguf, X.prompt (format with {}), X.system (said first)
+	set brain_base [file rootname $brain_model]
+	foreach {ext name} {prompt prompt.txt system system.txt} {
+		if {[file exists $brain_base.$ext]} { append brain_extra_vfs "        + rom | name: $name | label: shiro.$ext | binary: no\n" }
+	}
 	set brain_ram [expr {[file size $brain_model] / 1048576 + 640}]
 	set brain_policy "    + policy | label: shiro_brain -> brain_request | report: mykee_router -> brain_request\n    + policy | label: mykee_router -> brain_response | report: shiro_brain -> brain_response"
 	set brain_route "    + service ROM | label: brain_response | + child report_rom"
 	set brain_vfs "      + dir brain\n        + report | name: brain_request | label: brain_request | buffer: 8192\n        + rom | name: brain_response | label: brain_response | binary: no"
 	set brain_local_route {{"name":"shiro-local","url":"local://shiro"},}
-	set brain_child "+ start shiro_brain | caps: 1500 | ram: ${brain_ram}M
+	set brain_child_text "+ start shiro_brain | caps: 1500 | ram: ${brain_ram}M
   + binary shiro_brain
   + route
     + service ROM | label: brain_request | + child report_rom
@@ -294,14 +299,16 @@ if {$brain_model ne ""} {
         + pipe
       + dir model
         + rom | name: shiro.gguf
+@BRAIN_EXTRA_VFS@
       + dir brain
         + rom | name: request | label: brain_request | binary: no
         + report | name: response | label: brain_response | buffer: 16384
 "
+	set brain_child [string map [list @BRAIN_EXTRA_VFS@ [string trimright $brain_extra_vfs "\n"]] $brain_child_text]
 }
 
 install_config [string map [list @BRAIN_POLICY@ $brain_policy @BRAIN_ROUTER_ROUTE@ $brain_route @BRAIN_ROUTER_VFS@ $brain_vfs \
-                                 @MYKEE_LOCAL_ROUTE@ $brain_local_route @BRAIN_CHILD@ $brain_child] $hermos_config]
+                                 @MYKEE_LOCAL_ROUTE@ $brain_local_route @BRAIN_CHILD@ $brain_child @BRAIN_EXTRA_VFS@ $brain_extra_vfs] $hermos_config]
 
 #
 # drivers subsystem: the interactive driver stack without block/network.
@@ -573,6 +580,9 @@ set boot_modules [list {*}[build_artifacts] hermos_drivers.config hermos_termina
 if {$brain_model ne ""} {
 	exec cp -f $brain_model bin/shiro.gguf
 	lappend boot_modules shiro.gguf
+	foreach ext {prompt system} {
+		if {[file exists [file rootname $brain_model].$ext]} { exec cp -f [file rootname $brain_model].$ext bin/shiro.$ext; lappend boot_modules shiro.$ext }
+	}
 }
 build_boot_image $boot_modules
 

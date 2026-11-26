@@ -32,6 +32,7 @@
 #include <arpa/inet.h>
 
 #include "shiro_rag.h"
+#include <hermos_forge/forge.h>
 
 namespace {
 
@@ -233,7 +234,14 @@ void Libc::Component::construct(Libc::Env &env)
 				trim(resp);
 				size_t const nl = resp.find('\n');
 				if (nl != std::string::npos && resp.compare(0, nl, std::to_string(seq)) == 0) {
-					std::string const ai = resp.substr(nl + 1);
+					std::string ai = resp.substr(nl + 1);
+					/* a reply that proposes a component is checked by fixed rules (the Forge) before the user sees it */
+					if (ai.find("<file path=\"") != std::string::npos) {
+						Hermos::Forge::Result const fr = Hermos::Forge::check(ai);
+						printf("HermOS forge: component '%s' %s (%u files, %u problems)\n", fr.name.c_str(),
+						       fr.ok ? "passed" : "refused", (unsigned)fr.files.size(), (unsigned)fr.problems.size());
+						ai = Hermos::Forge::summary(fr);
+					}
 					printf("HermOS: AI response (%u bytes): [%s]\n", (unsigned)ai.size(), log_safe(ai).c_str());
 					write_file("/ai/ai_command", ai);
 					seq = 0;
