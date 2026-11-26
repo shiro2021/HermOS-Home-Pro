@@ -239,7 +239,21 @@ void Libc::Component::construct(Libc::Env &env)
 				printf("Shiro Brain: request %s (%u bytes): [%s]\n", log_safe(seq, 12).c_str(),
 				       (unsigned)prompt.size(), log_safe(prompt).c_str());
 
-				std::string const out = brain.answer(prompt);
+				/* a model with its own prompt format holds the HermOS knowledge itself: it gets the question only,
+				 * not the passages the agent retrieved for models that do not */
+				std::string question = prompt;
+				if (!brain.prompt_fmt.empty()) {
+					static char const marker[] = "answer the user's question: ";
+					size_t const m = question.rfind(marker);
+					if (m != std::string::npos) question = question.substr(m + sizeof(marker) - 1);
+				}
+				/* a Q/A model is trained on written questions: capitalise the first letter, end with a question mark */
+				if (!brain.prompt_fmt.empty()) {
+					trim(question);
+					if (!question.empty() && question[0] >= 'a' && question[0] <= 'z') question[0] = char(question[0] - 32);
+					if (!question.empty() && question.back() != '?' && question.back() != '.' && question.back() != '!') question += '?';
+				}
+				std::string const out = brain.answer(question);
 				printf("Shiro Brain: answer (%u bytes): [%s]\n", (unsigned)out.size(), log_safe(out).c_str());
 
 				write_file("/brain/response", seq + "\n" + sanitize(out));

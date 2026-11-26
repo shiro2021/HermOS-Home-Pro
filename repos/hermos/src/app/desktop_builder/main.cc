@@ -2585,8 +2585,27 @@ namespace Hermos {
 			if (!_ai_response.valid()) return;
 			if (!_ai_response.string()[0]) return;   /* no text -> nothing to draw */
 
-			/* small panel: W=400, H=150, pinned to the bottom centre */
-			int const pw = 400, ph = 150;
+			/* break the reply into lines of at most 58 characters: at a line break, else at the last space */
+			enum { MAX_LINES = 11, LINE = 64 };
+			char lines[MAX_LINES][LINE];
+			int  n_lines = 0;
+			{
+				char const *src = _ai_response.string();
+				while (*src && n_lines < MAX_LINES) {
+					while (*src == ' ') ++src;
+					int i = 0, last = -1;
+					while (src[i] && src[i] != '\n' && i < 58) { if (src[i] == ' ') last = i; ++i; }
+					int cut = (src[i] && src[i] != '\n' && last > 0) ? last : i;
+					for (int j = 0; j < cut; ++j) lines[n_lines][j] = (src[j] == '\t' || src[j] == '\r') ? ' ' : src[j];
+					lines[n_lines][cut] = 0;
+					++n_lines;
+					src += cut;
+					if (*src == '\n') ++src;
+				}
+			}
+
+			/* panel: 400 wide, as tall as its lines, pinned to the bottom centre */
+			int const pw = 400, ph = 40 + (n_lines < 6 ? 6 : n_lines) * 18 + 14;
 			int const px = _w / 2 - pw / 2;
 			int const py = _h - ph - 20;
 
@@ -2594,22 +2613,8 @@ namespace Hermos {
 			_stroke_rrect(px, py, pw, ph, 12, _accent_r, _accent_g, _accent_b);
 			_draw_text(surface, px + 16, py + 16, _solar(), "Hermes AI");
 
-			char const *src = _ai_response.string();
-			char        line[64];
-			int         y = py + 40;
-
-			while (*src && y < py + ph - 14) {
-				int i = 0, last = -1;
-				while (src[i] && i < 58) { if (src[i] == ' ') last = i; ++i; }
-				int const cut = (src[i] && last > 0) ? last : i;
-				if (cut <= 0) break;
-				for (int j = 0; j < cut; ++j) line[j] = src[j];
-				line[cut] = 0;
-				_draw_text(surface, px + 16, y, _white(), line);
-				src += cut;
-				while (*src == ' ') ++src;
-				y += 18;
-			}
+			for (int k = 0; k < n_lines; ++k)
+				if (lines[k][0]) _draw_text(surface, px + 16, py + 40 + k * 18, _white(), lines[k]);
 		}
 
 		/* ---- HermOS installer: a 9-step full-screen wizard ---- */

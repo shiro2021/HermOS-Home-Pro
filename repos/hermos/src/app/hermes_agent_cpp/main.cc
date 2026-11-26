@@ -245,7 +245,7 @@ void Libc::Component::construct(Libc::Env &env)
 					printf("HermOS: AI response (%u bytes): [%s]\n", (unsigned)ai.size(), log_safe(ai).c_str());
 					write_file("/ai/ai_command", ai);
 					seq = 0;
-				} else if ((waited_ms += 200) >= 90000) {
+				} else if ((waited_ms += 200) >= 300000) {
 					write_file("/ai/ai_command", "error: the AI router did not answer in time");
 					seq = 0;
 				}
