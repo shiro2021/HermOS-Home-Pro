@@ -3527,7 +3527,7 @@ namespace Hermos {
 		void _sync_sysinfo()
 		{
 			Scene::SysInfo &si = _sstate.sys;
-			_cpy(si.version, sizeof si.version, "HermOS V5 Beta (Genode 26.08)");
+			_cpy(si.version, sizeof si.version, "HermOS V7 (Genode 26.08)");
 
 			unsigned long const ms = _timer.elapsed_ms();
 			unsigned const mins = (unsigned)(ms / 60000), secs = (unsigned)(ms / 1000);

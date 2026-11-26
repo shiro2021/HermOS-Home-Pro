@@ -1,4 +1,4 @@
-# Building HermOS V5 Beta
+# Building HermOS V7
 
 Genode 26.08 tree (tag `26.08`, https://codeberg.org/genodelabs/genode) with
 the Genode toolchain, and this repo linked as `repos/hermos`.
