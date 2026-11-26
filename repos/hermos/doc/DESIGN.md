@@ -8,13 +8,19 @@ The supplied PNG emblem is available and is the canonical glyph. Preserve it byt
 
 ## Locked geometry and tokens
 
-The shared window outline is exactly six vertices, clockwise:
+**Cells, not windows (D-020, replaces the six-sided outline of D-006).** Every application surface is a
+Cell: an irregular octagon, i.e. a W×H rectangle with a 45-degree chamfer at all four corners. Clockwise,
+with chamfer `c`:
 
 ```text
-(C,0), (W-C,0), (W,H/2), (W-C,H), (C,H), (0,H/2)
+(c,0), (W-c,0), (W,c), (W,H-c), (W-c,H), (c,H), (0,H-c), (0,c)
 ```
 
-The title bar, frame, content mask and active/inactive border use the same polygon. Avoid adding sub-corners to the outline. V7 fixes the geometry but does not provide a measured numeric corner inset or frame thickness; choose those from image measurements and record them before pixel matching.
+`c = chamfer% × min(W,H)` with `chamfer:` set per Cell in `theme.hid`, clamped to `c ≤ W/2` and `c ≤ H/2`.
+The frame, rim, content mask and hit tests use this one polygon (`desktop_builder`:
+`get_octagon_vertices`, `is_inside_octagon`). Active Cells have a glowing accent rim; inactive Cells a carbon
+gray rim (`theme.hid` `+ frame`, `+ ink`). Do not add sub-corners. The six-sided helpers in
+`hermos_ui/window_geometry.h` and the installer canvas are legacy.
 
 | Token | Initial visual rule | State |
 | --- | --- | --- |

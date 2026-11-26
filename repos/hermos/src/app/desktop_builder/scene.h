@@ -131,7 +131,7 @@ struct CmdBar
 /* what the desktop really knows about the system (filled by desktop_builder) */
 struct SysInfo
 {
-	char version[56]  { "HermOS V9 Beta" };
+	char version[56]  { "HermOS V9.01 Beta" };
 	char kernel[56]   { "" };
 	char uptime[32]   { "" };
 	char memory[64]   { "" };
@@ -196,6 +196,9 @@ struct State
 	bool  win_hosted[6] { };               /* an app owns the content area       */
 	bool  search_focus  { false };
 	int   rail_active   { 0 };             /* Agents */
+	/* rail tiles with a real target: Agents (pane), System (System Cell), Files (hermos_files).
+	 * Network, Devices and Settings have no component yet: drawn dimmed and not clickable. */
+	bool  rail_live[6]  { true, true, true, false, false, false };
 	int   hover_win     { -1 };
 	int   order[6]      { 0, 1, 2, 3, 4, 5 };   /* z-order, bottom -> top */
 };
@@ -621,7 +624,9 @@ static inline void draw_rail(Ctx &g, State const &st, Hits &hits)
 		bool const act = i == st.rail_active;
 		hits.rail[i] = { 1128 - 26, cy - 26, 52, 64 };     /* tile + label */
 		if (act) hex_tile_v(g, 1128, cy, 46, 52, true); else hex_tile_v(g, 1128, cy, 44, 50, false);
-		Rgba const ic = act ? Rgba { 255, 164, 64, 1.0f } : Rgba { 236, 238, 240, 0.96f };
+		bool const live = st.rail_live[i];
+		Rgba const ic = act ? Rgba { 255, 164, 64, 1.0f }
+		              : live ? Rgba { 236, 238, 240, 0.96f } : Rgba { 236, 238, 240, 0.34f };
 		switch (i) {
 		case 0: Icon::agents(g, 1128, cy, 1.0f, ic); break;
 		case 1: Icon::gear(g, 1128, cy, 0.95f, ic); break;
@@ -630,7 +635,7 @@ static inline void draw_rail(Ctx &g, State const &st, Hits &hits)
 		case 4: Icon::devices(g, 1128, cy, 1.0f, ic); break;
 		case 5: Icon::gear(g, 1128, cy, 0.95f, ic); break;
 		}
-		g.textc(g.f.med, 1128, cy + 25.5f, 11.4f, Rgba { 245, 246, 248, 0.97f }, names[i]);
+		g.textc(g.f.med, 1128, cy + 25.5f, 11.4f, Rgba { 245, 246, 248, live ? 0.97f : 0.38f }, names[i]);
 	}
 	/* badge on Agents: the number of apps that are really running */
 	int running = 0;
@@ -1021,7 +1026,8 @@ static inline void render_panels(Canvas &c, Fonts &f, Assets &a, State &st, Hits
 	c.ink = &st.ink; c.inactive = false;
 	Ctx g = make_ctx(c, f, a);
 	/* the right group: the navigation rail and the Agents & Workers pane slide out to the edge
-	 * together; the rail stays at the edge so the pane can be brought back with its Agents tile */
+	 * together and both leave the screen; only the slim bar stays, and it (or Meta+A) brings
+	 * both back */
 	{
 		float const sh = st.right.shown();
 		float const pane_w = st.right.thickness;
@@ -1046,7 +1052,9 @@ static inline void render_panels(Canvas &c, Fonts &f, Assets &a, State &st, Hits
 		for (int i = 0; i < MAX_APP_ENTRIES; ++i) { hits.app_close[i] = none; hits.app_play[i] = none; }
 		hits.app_play_n = 0;
 
-		float const rdx = (1.0f - sh) * (pane_w - slim);        /* rail: ends docked beside the slim bar */
+		/* rail: slides past the screen edge (its left edge is at x 1082, so pane + rail + margin
+		 * clears it); drawing is clipped to the canvas, and its hit boxes leave the screen too */
+		float const rdx = (1.0f - sh) * (pane_w + st.right_rail + 12.0f);
 		Ctx gr = g; gr.ox += g.L(rdx);
 		draw_rail(gr, st, hits);
 		for (int i = 0; i < 6; ++i) hits.rail[i].x += rdx;
