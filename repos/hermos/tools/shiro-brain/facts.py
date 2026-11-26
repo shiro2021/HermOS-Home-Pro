@@ -1,25 +1,8 @@
-#!/usr/bin/env python3
-"""
-Build the HermOS question/answer material for the Shiro Brain.
-
-  build_training_data.py REPO_DIR OUT.txt
-
-Two sources: the status table in doc/FUNCTIONS.md (every row becomes questions and one answer, so the
-model cannot drift from what the system really does) and a list of curated facts below. Format of the
-output, one sample per paragraph:
-
-    Q: <question>
-    A: <answer>
-"""
-import re, sys, random
-
-repo, out = sys.argv[1], sys.argv[2]
-random.seed(11)
-
+"""Curated facts about HermOS: (question, answer). The answers are what the Shiro Brain may state."""
 FACTS = [
  ("What is HermOS?", "HermOS is an AI-native operating system built on the Genode framework and the NOVA microhypervisor. Its motto is A More Human Computer: you say what you want and the system does it."),
  ("What does HermOS run on?", "HermOS runs on Genode 26.08 with the NOVA microhypervisor on x86-64 PCs that boot with UEFI. It has only been tested in QEMU so far, not on real hardware."),
- ("What are Cells?", "Cells are the floating, octagonal, resizable and snappable frames that hold applications in HermOS. HermOS never calls them windows."),
+ ("What is a Cell? What are Cells?", "Cells are the floating, octagonal, resizable and snappable frames that hold applications in HermOS. HermOS never calls them windows."),
  ("Does HermOS have windows?", "No. HermOS has Cells. A Cell is an octagonal frame with a glowing rim when it is active and a carbon gray rim when it is not."),
  ("What is an active Cell?", "The active Cell is the one in use. It has a bright orange rim with a white-hot core line and a glow. Inactive Cells have a carbon gray rim."),
  ("What is theme.hid?", "theme.hid is the data file that holds every layout, size and color of the desktop. The theme engine reads it and publishes the numbers, so nothing is hardcoded in the desktop."),
@@ -27,8 +10,8 @@ FACTS = [
  ("What is the desktop builder?", "The desktop builder is the main user interface component. It draws the whole screen in software, owns the framebuffer and the input events, serves the Gui to application Cells and handles z-order, snapping and the panels."),
  ("What is the command bar?", "The command bar is the single search field in the middle of the desktop. You type what you want, press Enter, and the Hermes agent answers in a reply panel."),
  ("How do I ask HermOS something?", "Click the command bar in the middle of the desktop, type your request and press Enter. The answer appears in a panel."),
- ("How do I open the Terminal?", "Press the play button of Terminal in the Agents and Workers pane, or pin the left dock with Meta+L and click Terminal. It opens a bash shell in a Cell."),
- ("How do I open Files?", "Press the play button of Files in the Agents and Workers pane, or pin the left dock with Meta+L and click Files."),
+ ("How do I open, start or launch the Terminal?", "Press the play button of Terminal in the Agents and Workers pane, or pin the left dock with Meta+L and click Terminal. It opens a bash shell in a Cell."),
+ ("How do I open, start or launch Files?", "Press the play button of Files in the Agents and Workers pane, or pin the left dock with Meta+L and click Files."),
  ("What does Meta+L do?", "Meta+L shows or hides the left dock, which holds the Files, Terminal and Install launchers."),
  ("What does Meta+B do?", "Meta+B shows or hides the bottom bar, the taskbar with the clock."),
  ("What does Meta+A do?", "Meta+A shows or hides the Agents and Workers pane together with the navigation rail."),
@@ -38,14 +21,14 @@ FACTS = [
  ("What is the Agents and Workers pane?", "It is the panel on the right that lists the running apps with a close button and the available apps with a play button. Hide and show it with its X button, the Agents tile on the rail, or Meta+A."),
  ("What is the rail?", "The rail is the vertical strip of hexagon tiles on the right edge: Agents, System, Files, Network, Devices and Settings. The Agents tile shows how many apps are running."),
  ("How do I install HermOS?", "Boot the installer ISO, press Install HermOS in the Welcome Cell or the Install launcher, choose the target disk and the size of the HermOS partition, tick that you understand the disk will be erased, and press Install HermOS. The installer writes the system, reads it back to verify it, and then offers a reboot."),
- ("What does the installer do to my disk?", "It erases the chosen disk, writes a GPT with the HermOS system and a data partition, and verifies the write by reading it back and comparing. Dual boot and keeping existing data are not supported."),
+ ("What happens when I install HermOS? What does the installer do to my disk?", "It erases the chosen disk, writes a GPT with the HermOS system and a data partition, and verifies the write by reading it back and comparing. Dual boot and keeping existing data are not supported."),
  ("How big must the disk be?", "Use a disk of at least 16 GB. HermOS itself needs a few gigabytes, and the rest becomes the data partition, so a very small disk leaves no room for data."),
  ("Where are my files stored?", "Your files live on the data partition. The Terminal mounts it as /home, and files written there survive a restart."),
  ("Does HermOS keep my files after a restart?", "Yes, files in /home on the data partition persist across restarts. The installed system itself runs from RAM like the live one."),
  ("What is MyKee?", "MyKee is the one-key gateway for AI models. The MyKee router holds the key, tries the routes in order, and returns the first answer. The first route is the local Shiro Brain when the image has a model, then the cloud model."),
  ("What is the MyKee key?", "The MyKee key is the API key of the AI service. It is not stored in the source: you give it to the build with HERMOS_MYKEE_KEY_FILE, and an image built without it answers that no key is present."),
  ("What is Hermes?", "Hermes is the first reference agent of HermOS. The Hermes agent relays your request to the AI router; the Hermes Core Director is the planned coordinator for planning, policy, memory and workers."),
- ("What is Shiro?", "Shiro is the name of HermOS's AI helper and of its theme. Shiro Brain is the local language model that answers questions about HermOS."),
+ ("What is Shiro?", "Shiro is the AI assistant of HermOS, and also the name of its theme. Shiro Brain is the local language model that answers questions about HermOS."),
  ("What is the Shiro Brain?", "The Shiro Brain is a small local language model that runs on the device with llama.cpp. It knows how HermOS works and can use REA to propose new components. It runs offline."),
  ("Does HermOS need the internet for AI?", "No. When the image carries a model, the Shiro Brain answers locally with no network. The cloud model is only the fallback."),
  ("What is the Capability Broker?", "The Capability Broker is the security gatekeeper. Every app has a manifest that says what it may reach, such as the network, block devices and the file system, and what memory it may use. A launch whose manifest is not valid is refused. There are no permission pop-ups."),
@@ -82,50 +65,17 @@ FACTS = [
  ("What is NOVA?", "NOVA is the microhypervisor that Genode runs on in HermOS. It provides isolation, address spaces and scheduling underneath the components."),
  ("How do I write a Genode component for HermOS?", "Make a directory under src/app with a target.mk that names the target, its libraries and its sources, and a main.cc with the component entry point. Add its manifest, list it in the run script, and build."),
  ("What rules must a HermOS component follow?", "Never use the word window, use Cells. Take layouts and colors from theme.hid, never hardcode pixels. Keep the user interface free of libc. Use no permission pop-ups. Declare a manifest with the least capabilities needed."),
+ ("How do I close a Cell?", "Press the red close button in the Cell's title strip, or press Meta+K to close the front-most Cell at once. Closing a Cell destroys its sandbox and returns its memory."),
+ ("Which libraries may a component use?", "A proposed component may use only base, libc, stdcxx and libm. The Forge refuses any other library."),
+ ("What kernel does HermOS use?", "HermOS runs on the NOVA microhypervisor under Genode 26.08."),
+ ("How do I enable the AI helper?", "Build the image with HERMOS_MYKEE_KEY_FILE for the cloud model, or with HERMOS_BRAIN_MODEL for the local model. Without either, the command bar says that no AI route answered."),
+ ("What is the Forge?", "The Forge is the fixed checker that reads a component the Shiro Brain proposes. It refuses unsafe paths, banned calls, libraries that are not offered, network or disk-write requests and the word window. Nothing is kept until the user approves."),
+ ("Can the Shiro Brain write code?", "It can propose a minimal component skeleton today. Writing real code needs a larger model, which can be added without changing HermOS."),
+ ("What happens if there is no AI key?", "The command bar answers that no AI route answered: no local model and no API key in this image."),
+ ("What is the data partition?", "The data partition is the part of the disk the installer creates for your files. The Terminal mounts it as /home."),
+ ("What file system does HermOS use?", "The installer makes a GPT disk with the HermOS system and an ext2 data partition for user files."),
+ ("Do the mouse and keyboard work?", "Yes. USB keyboards and pointers work. PS/2 and I2C touchpads are not in this image."),
+ ("How do I snap a Cell?", "Hold Meta and press an arrow key to snap the front-most Cell to a half of the screen, or Home, End, Page Up and Page Down for the quarters."),
+ ("What is the Terminal?", "The Terminal is a Cell with a bash shell. Your data partition is mounted at /home, so files you write there survive a restart."),
+ ("What is the Files app?", "Files is a file browser Cell. It shows the data partition's folders and opens text files. Format conversion and SFTP are stubs."),
 ]
-
-# the status table: every row is one fact the model must be able to repeat
-rows = []
-txt = open(f"{repo}/repos/hermos/doc/FUNCTIONS.md", encoding="utf-8").read()
-for line in txt.splitlines():
-    m = re.match(r"\|\s*(.+?)\s*\|\s*(VERIFIED|BUILT|STUB|VISUAL|ABSENT|SOURCE ONLY|PARTIAL|BLOCKED)\s*\|\s*(.*?)\s*\|?\s*$", line)
-    if m:
-        f, st, note = m.group(1), m.group(2), m.group(3).rstrip("|").strip()
-        f = re.sub(r"`", "", f); note = re.sub(r"`", "", note)
-        f = re.sub(r"\*\*", "", f); note = re.sub(r"\*\*", "", note)
-        if 8 < len(f) < 150: rows.append((f, st, note))
-
-TEMPL_Q = ["What is the state of {f}?", "Does HermOS have this: {f}?", "Tell me about {f}.", "Is {f} working?"]
-def ans(f, st, note):
-    return f"{f}: {st}." + (f" {note}" if note else "")
-
-# component proposals: the file-block format, with a minimal valid skeleton (what the Forge accepts)
-def skeleton(n):
-    return (f'<file path="src/app/{n}/main.cc">\n#include <base/component.h>\nvoid Component::construct(Genode::Env &) {{ }}\n</file>\n'
-            f'<file path="src/app/{n}/target.mk">\nTARGET = {n}\nLIBS = base\nSRC_CC = main.cc\n</file>\n'
-            f'<file path="src/app/{n}/manifest.hid">\n+ manifest\n name: {n}\n kind: rea\n + caps\n  vfs: /apps/{n},ro\n  nic: none\n  block: none\n  gui: cell\n + quotas\n  ram: 16M\n  cpu: 25\n</file>')
-NAMES = ["clockcell", "notepad", "calcer", "weatherbox", "mediaview", "taskboard", "hexdump", "logview", "paintcell", "timer", "notes", "sysinfo",
-         "diskmap", "netwatch", "colorpick", "unitconv"]
-CREATE_Q = ["Create a component named {n}.", "Make a new component called {n}.", "Write the component {n}.", "I need a component {n}, build it."]
-COMP = []
-for n in NAMES:
-    for t in random.sample(CREATE_Q, 3):
-        COMP.append((t.format(n=n), skeleton(n)))
-
-samples = []
-for q, a in COMP:
-    samples.append((q, a))
-for q, a in FACTS:
-    samples.append((q, a))
-    samples.append((q.rstrip("?") + ", please?", a))
-    samples.append(("Explain: " + q.rstrip("?").lower() + ".", a))
-for f, st, note in rows:
-    a = ans(f, st, note)
-    for t in random.sample(TEMPL_Q, 2):
-        samples.append((t.format(f=f), a))
-random.shuffle(samples)
-with open(out, "w", encoding="utf-8") as fh:
-    for q, a in samples:
-        fh.write(f"Q: {q}\nA: {a}\n\n")
-print(len(FACTS), "facts,", len(rows), "status rows ->", len(samples), "samples,",
-      sum(len(q) + len(a) for q, a in samples), "characters")

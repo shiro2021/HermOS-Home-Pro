@@ -1,0 +1,41 @@
+# question | keywords that a correct answer contains (all, case-insensitive, separated by ;)
+how do i close a cell right now | Meta+K
+hide the pane on the right | Meta+A
+show the left dock | Meta+L
+how to hide the taskbar | Meta+B
+whats a cell | octagonal
+do you have windows | Cell
+what is theme.hid for | color
+what draws the screen | desktop builder
+how do i start the terminal | play
+how do i browse files | Files
+what happens when i install | erase
+how big a disk do i need | 16 GB
+are my files kept after restart | /home
+what is mykee | key
+where does the ai key come from | HERMOS_MYKEE_KEY_FILE
+is there internet needed for the brain | local
+what is rea | reverse
+what is the clean room | specification
+what is a rea cell | sandbox
+what is the vault | generated
+what is the capability broker | manifest
+do apps ask permission with popups | no
+what kernel does hermos use | NOVA
+does it run on real hardware | never
+is wifi supported | no
+what is the hermes core director | coordinator
+how do i build hermos | build-hermos-v5.sh
+how do i add a local model to the image | HERMOS_BRAIN_MODEL
+why is it slow in qemu | software
+what does stub mean | placeholder
+what does verified mean | QEMU
+is audio supported | absent
+can i dual boot | not supported
+what is the welcome cell | installer
+how do i maximize a cell | second
+what is the rail | hexagon
+which libraries may a component use | libc
+can a generated component use the network | no
+what is hermes | agent
+what is shiro | assistant

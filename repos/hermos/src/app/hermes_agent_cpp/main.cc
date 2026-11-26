@@ -105,7 +105,15 @@ namespace {
 	{
 		std::string const corpus = read_file("/corpus/shiro_corpus.txt");
 		if (corpus.empty()) { printf("Shiro: no corpus at /corpus/shiro_corpus.txt\n"); return; }
-		g_index.add(corpus);
+		/* the corpus is a knowledge base: one fact per paragraph, each indexed whole */
+		size_t pos = 0;
+		while (pos < corpus.size()) {
+			size_t e = corpus.find("\n\n", pos);
+			if (e == std::string::npos) e = corpus.size();
+			std::string const para = corpus.substr(pos, e - pos);
+			if (para.find_first_not_of(" \t\r\n") != std::string::npos) g_index.add(para);
+			pos = e + 2;
+		}
 		g_indexed = true;
 		printf("Shiro: indexed corpus (%zu chunks)\n", g_index.size());
 	}

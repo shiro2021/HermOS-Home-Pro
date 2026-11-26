@@ -1,24 +1,30 @@
 #!/usr/bin/env python3
 """
-Train "Shiro-Mini": a small llama-architecture language model, from scratch, on the HermOS Q/A material,
-and write it as a GGUF that llama.cpp (and the Shiro Brain component) can load.
+Train "Shiro-Mini": a small llama-architecture language model, from scratch, that ANSWERS FROM FACTS.
 
-  train_mini.py DATA.txt OUT.gguf [steps] [gguf-py dir]
+  train_shiro.py KB.json OUT.gguf [steps] [gguf-py dir]
 
-It is a stand-in until a real base model is chosen: it repeats and recombines what is in the training
-text, it does not reason and it cannot write components. Needs: jax, numpy. The tokenizer is the one in
-make_dummy_model.py (3 specials, 256 byte tokens, printable ASCII, the SPM space), so llama.cpp tokenizes
-exactly like this script does.
+At run time the agent retrieves the best facts (BM25) and the brain puts them in front of the question:
+
+    C: <fact>          C: <fact>          Q: <question>          A:
+
+This model is trained to read those facts and answer from them, to say it does not know when they do not
+cover the question, and to write a minimal component with the name taken from the request. So its
+knowledge of HermOS is in the knowledge base (kb.txt in the image), not in its weights: updating the docs
+updates what it knows, and a bigger model can replace this one without changing anything else. It does not
+reason. Needs: jax, numpy. Tokenizer: the one in make_dummy_model.py (llama.cpp tokenizes the same way).
 """
 import sys, time, math
 import numpy as np
 import jax, jax.numpy as jnp
 
-data_path, out = sys.argv[1], sys.argv[2]
-steps = int(sys.argv[3]) if len(sys.argv) > 3 else 2500
+kb_path, out = sys.argv[1], sys.argv[2]
+steps = int(sys.argv[3]) if len(sys.argv) > 3 else 3000
 if len(sys.argv) > 4:
     sys.path.insert(0, sys.argv[4])
-import gguf
+import gguf, json, random, os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) + '/../../repos/hermos/tools/shiro-brain')
+import shiro_lib
 
 # ---- vocabulary, identical to make_dummy_model.py
 tokens, scores, types = ["<unk>", "<s>", "</s>"], [0.0, 0.0, 0.0], [2, 3, 3]
@@ -43,16 +49,61 @@ def encode(text):
     return ids
 
 BOS, EOS = 1, 2
-text = open(data_path, encoding="utf-8").read()
-samples = [s.strip() for s in text.split("\n\n") if s.strip()]
-stream = []
-for s in samples:
-    stream += [BOS] + encode(s) + [EOS]
-stream = np.array(stream, dtype=np.int32)
-print("samples", len(samples), "tokens", len(stream), "vocab", V, flush=True)
+UNKNOWN = "I do not know that about HermOS."
+
+kb = json.load(open(kb_path, encoding="utf-8"))
+chunks = [it["text"] for it in kb]
+index = shiro_lib.Index(chunks)
+rnd = random.Random(5)
+
+def skeleton(n):
+    return (f'<file path="src/app/{n}/main.cc">\n#include <base/component.h>\nvoid Component::construct(Genode::Env &) {{ }}\n</file>\n'
+            f'<file path="src/app/{n}/target.mk">\nTARGET = {n}\nLIBS = base\nSRC_CC = main.cc\n</file>\n'
+            f'<file path="src/app/{n}/manifest.hid">\n+ manifest\n name: {n}\n kind: rea\n + caps\n  vfs: /apps/{n},ro\n  nic: none\n  block: none\n  gui: cell\n + quotas\n  ram: 16M\n  cpu: 25\n</file>')
+
+samples = []          # (prompt text, answer text)
+for gi, it in enumerate(kb):
+    for q in it["questions"]:
+        for v in rnd.sample(shiro_lib.paraphrases(q, rnd), min(4, len(shiro_lib.paraphrases(q, rnd)))):
+            hits = [i for i, _ in index.search(shiro_lib.normalize(v))]
+            if gi in hits:
+                samples.append((shiro_lib.prompt(v, [chunks[i] for i in hits]), it["answer"]))
+            elif rnd.random() < 0.6:           # retrieval missed: show the fact anyway, in a random place
+                ctx = hits[:1]; ctx.insert(rnd.randint(0, len(ctx)), gi)
+                samples.append((shiro_lib.prompt(v, [chunks[i] for i in ctx]), it["answer"]))
+            else:                              # the facts shown do not cover the question
+                samples.append((shiro_lib.prompt(v, [chunks[i] for i in hits]), UNKNOWN))
+
+OOS = ["What is the weather today?", "Who won the football match?", "Write me a poem about the sea.", "What is the capital of France?",
+       "How do I cook pasta?", "Tell me a joke.", "What is the price of bitcoin?", "Who is the president?", "Translate hello to Spanish.",
+       "How tall is Mount Everest?", "What is the meaning of life?", "Recommend a movie.", "What is 17 times 23?", "How do I lose weight?",
+       "What is the best phone?", "Explain quantum physics.", "Who painted the Mona Lisa?", "How do I fix my car?", "Is it going to rain?",
+       "What time is it in Tokyo?", "Does HermOS have a flying mode?", "Does HermOS support Bluetooth printers from 1998?", "What is the HermOS stock price?"]
+for q in OOS:
+    for v in rnd.sample(shiro_lib.paraphrases(q, rnd), 3):
+        hits = [i for i, _ in index.search(shiro_lib.normalize(v))]
+        samples.append((shiro_lib.prompt(v, [chunks[i] for i in hits]), UNKNOWN))
+
+syl = ["ka", "to", "ri", "me", "su", "no", "ba", "le", "vi", "da", "po", "zu", "ni", "ha", "ko", "ex", "or", "an", "mi", "lu"]
+names = set()
+while len(names) < 260:
+    names.add("".join(rnd.choice(syl) for _ in range(rnd.randint(2, 4))) + rnd.choice(["", "", "view", "box", "cell", "tool"]))
+CQ = ["Create a component named {n}.", "Make a new component called {n}.", "Write the component {n}.", "I need a component {n}, build it.",
+      "create a component named {n}", "make component {n}", "new component {n} please"]
+for n in sorted(names):
+    for t in rnd.sample(CQ, 2):
+        samples.append((f"Q: {shiro_lib.normalize(t.format(n=n))}\nA:", skeleton(n)))
+
+rnd.shuffle(samples)
+ids, mask = [], []
+for p, a in samples:
+    pi = [BOS] + encode(p); ai = encode(" " + a) + [EOS]     # the model's answer starts after "A:" with a space
+    ids += pi + ai; mask += [0] * len(pi) + [1] * len(ai)
+stream = np.array(ids, dtype=np.int32); smask = np.array(mask, dtype=np.float32)
+print("facts", len(kb), "samples", len(samples), "tokens", len(stream), "vocab", V, flush=True)
 
 # ---- model
-D, L, H, F, T = 192, 4, 4, 512, 576
+D, L, H, F, T = 256, 5, 4, 704, 1024
 HD = D // H
 rng = np.random.default_rng(3)
 
@@ -99,12 +150,13 @@ def forward(p, ids):
         x = x + (jax.nn.silu(h @ lp["wg"].T) * (h @ lp["wu"].T)) @ lp["wd"].T
     return rms(x, p["norm"]) @ p["out"].T
 
-def loss_fn(p, ids):
+def loss_fn(p, ids, msk):
     logits = forward(p, ids[:, :-1])
     logp = jax.nn.log_softmax(logits, -1)
     tgt = ids[:, 1:]
     nll = -jnp.take_along_axis(logp, tgt[..., None], -1)[..., 0]
-    return nll.mean()
+    m = msk[:, 1:]
+    return (nll * m).sum() / jnp.maximum(m.sum(), 1.0)
 
 # ---- AdamW, by hand (no optax needed)
 m = jax.tree_util.tree_map(jnp.zeros_like, params)
@@ -112,8 +164,8 @@ v2 = jax.tree_util.tree_map(jnp.zeros_like, params)
 LR, B1, B2, WD = 3e-3, 0.9, 0.99, 0.01
 
 @jax.jit
-def step(p, m, v2, ids, lr, t):
-    l, g = jax.value_and_grad(loss_fn)(p, ids)
+def step(p, m, v2, ids, msk, lr, t):
+    l, g = jax.value_and_grad(loss_fn)(p, ids, msk)
     gn = jnp.sqrt(sum(jnp.sum(x * x) for x in jax.tree_util.tree_leaves(g)))
     g = jax.tree_util.tree_map(lambda x: x * jnp.minimum(1.0, 1.0 / (gn + 1e-6)), g)
     m = jax.tree_util.tree_map(lambda a, b: B1 * a + (1 - B1) * b, m, g)
@@ -124,20 +176,20 @@ def step(p, m, v2, ids, lr, t):
     p = jax.tree_util.tree_map(upd, p, m, v2)
     return p, m, v2, l
 
-BATCH = 8
+BATCH = 4
 t0 = time.time()
 for i in range(1, steps + 1):
     starts = rng.integers(0, len(stream) - T - 1, BATCH)
-    ids = jnp.asarray(np.stack([stream[s:s + T + 1] for s in starts]))
+    ids = jnp.asarray(np.stack([stream[s:s + T + 1] for s in starts])); msk = jnp.asarray(np.stack([smask[s:s + T + 1] for s in starts]))
     lr = LR * min(1.0, i / 100) * (0.1 + 0.9 * 0.5 * (1 + math.cos(math.pi * i / steps)))
-    params, m, v2, l = step(params, m, v2, ids, lr, float(i))
+    params, m, v2, l = step(params, m, v2, ids, msk, lr, float(i))
     if i % 50 == 0 or i == 1:
         print(f"step {i}/{steps} loss {float(l):.3f} {time.time() - t0:.0f}s", flush=True)
 
 # ---- GGUF
 P = jax.tree_util.tree_map(np.asarray, params)
 wr = gguf.GGUFWriter(out, "llama")
-wr.add_name("shiro-mini")
+wr.add_name("shiro-mini-rag")
 wr.add_context_length(T)
 wr.add_embedding_length(D); wr.add_block_count(L); wr.add_feed_forward_length(F)
 wr.add_head_count(H); wr.add_head_count_kv(H); wr.add_layer_norm_rms_eps(1e-5)

@@ -26,20 +26,36 @@
 
 namespace shiro_rag {
 
+	/* words that carry no topic, and the plural "s": the same rules as shiro_lib.py, so training and runtime retrieve alike */
+	inline bool is_stop(std::string const &t)
+	{
+		static char const *const w[] = { "what", "is", "are", "the", "a", "an", "do", "does", "i", "how", "to", "of", "it", "in", "on",
+		                                 "for", "and", "or", "you", "can", "me", "my", "tell", "about", "please", "whats", "there", "s" };
+		for (char const *x : w) if (t == x) return true;
+		return false;
+	}
+
+	inline std::string stem(std::string t)
+	{
+		if (t.size() > 3 && t.back() == 's' && t[t.size() - 2] != 's') t.pop_back();
+		return t;
+	}
+
 	inline std::vector<std::string> tokenize(std::string const &s)
 	{
 		std::vector<std::string> out;
 		std::string cur;
+		auto flush = [&] () {
+			if (cur.empty()) return;
+			if (!is_stop(cur)) out.push_back(stem(cur));
+			cur.clear();
+		};
 		for (char c : s) {
 			unsigned char u = static_cast<unsigned char>(c);
-			if (std::isalnum(u)) {
-				cur.push_back(static_cast<char>(std::tolower(u)));
-			} else if (!cur.empty()) {
-				out.push_back(cur);
-				cur.clear();
-			}
+			if (std::isalnum(u)) cur.push_back(static_cast<char>(std::tolower(u)));
+			else flush();
 		}
-		if (!cur.empty()) out.push_back(cur);
+		flush();
 		return out;
 	}
 

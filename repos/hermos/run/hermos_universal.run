@@ -574,7 +574,12 @@ if {![file exists $ca_src]} {
 exec cp $ca_src bin/ca-bundle.crt
 
 # Shiro Local Brain corpus: the HermOS docs (text only, no secrets live in doc/)
-exec sh -c "cat [genode_dir]/repos/hermos/doc/*.md > bin/shiro_corpus.txt"
+if {[catch {exec python3 [genode_dir]/repos/hermos/tools/shiro-brain/build_kb.py [genode_dir]/repos/hermos bin/kb_tmp} err]} {
+	puts "NOTE: knowledge base not built ($err): using the plain docs"
+	exec sh -c "cat [genode_dir]/repos/hermos/doc/*.md > bin/shiro_corpus.txt"
+} else {
+	file copy -force bin/kb_tmp/kb.txt bin/shiro_corpus.txt
+}
 
 set boot_modules [list {*}[build_artifacts] hermos_drivers.config hermos_terminal.config Roboto-Regular.ttf icon_search.png icon_folder.png icon_mic.png icon_user.png icon_terminal.png icon_close.png icon_minimize.png icon_pause.png wallpaper.png logo.png icon_leaf.png registry files_menu menu_view_style.tar theme.hid ca-bundle.crt mykee.key shiro_corpus.txt hermos-system.img]
 if {$brain_model ne ""} {

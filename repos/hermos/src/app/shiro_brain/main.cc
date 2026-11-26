@@ -148,10 +148,8 @@ namespace {
 		{
 			if (tmpl.empty()) {
 				/* a model without a chat template: system text, then the format with the user text in it */
-				std::string f = prompt_fmt.empty() ? std::string("{}") : prompt_fmt;
-				size_t const p = f.find("{}");
-				if (p != std::string::npos) f.replace(p, 2, user);
-				return system_text.empty() ? f : system_text + f;
+				if (!prompt_fmt.empty()) return user;       /* a facts-and-question model: already shaped by the caller */
+				return system_text.empty() ? user : system_text + user;
 			}
 			llama_chat_message const msg { "user", user.c_str() };
 			std::vector<char> buf(user.size() * 2 + 1024);
@@ -239,21 +237,53 @@ void Libc::Component::construct(Libc::Env &env)
 				printf("Shiro Brain: request %s (%u bytes): [%s]\n", log_safe(seq, 12).c_str(),
 				       (unsigned)prompt.size(), log_safe(prompt).c_str());
 
-				/* a model with its own prompt format holds the HermOS knowledge itself: it gets the question only,
-				 * not the passages the agent retrieved for models that do not */
+				/*
+				 * A model with a prompt sidecar answers from facts: the agent's retrieved facts become "C:" lines
+				 * (the first two, as long as in training), then the question. A request to create a component
+				 * gets no facts: it needs only the name.
+				 */
 				std::string question = prompt;
+				std::string shaped;
 				if (!brain.prompt_fmt.empty()) {
-					static char const marker[] = "answer the user's question: ";
+					std::vector<std::string> facts;
+					static char const head[] = "Context (from the HermOS docs):\n", marker[] = "answer the user's question: ";
 					size_t const m = question.rfind(marker);
-					if (m != std::string::npos) question = question.substr(m + sizeof(marker) - 1);
-				}
-				/* a Q/A model is trained on written questions: capitalise the first letter, end with a question mark */
-				if (!brain.prompt_fmt.empty()) {
+					if (m != std::string::npos) {
+						std::string const ctx = question.substr(0, m);
+						question = question.substr(m + sizeof(marker) - 1);
+						size_t pos = ctx.find(head) == std::string::npos ? 0 : ctx.find(head) + sizeof(head) - 1;
+						while (pos < ctx.size() && facts.size() < 2) {
+							size_t e = ctx.find("\n- ", pos + 1);
+							std::string f = ctx.substr(pos, e == std::string::npos ? std::string::npos : e - pos);
+							if (f.compare(0, 2, "- ") == 0) f.erase(0, 2);
+							while (!f.empty() && (f.back() == '\n' || f.back() == ' ')) f.pop_back();
+							if (!f.empty() && f.find("Using the context above") == std::string::npos) facts.push_back(f);
+							if (e == std::string::npos) break;
+							pos = e + 1;
+						}
+					}
 					trim(question);
 					if (!question.empty() && question[0] >= 'a' && question[0] <= 'z') question[0] = char(question[0] - 32);
 					if (!question.empty() && question.back() != '?' && question.back() != '.' && question.back() != '!') question += '?';
+
+					std::string lower = question;
+					for (auto &c : lower) if (c >= 'A' && c <= 'Z') c = char(c + 32);
+					bool const create = lower.find("component") != std::string::npos &&
+					    (lower.compare(0, 6, "create") == 0 || lower.compare(0, 4, "make") == 0 || lower.compare(0, 5, "write") == 0 ||
+					     lower.compare(0, 3, "new") == 0 || lower.compare(0, 6, "i need") == 0);
+					if (create) facts.clear();
+
+					for (auto &f : facts) {                      /* the same cut as in training: at most 300 characters */
+						if (f.size() > 300) {
+							size_t p1 = f.rfind(". ", 300), p2 = f.rfind("; ", 300);
+							size_t p = p1 == std::string::npos ? p2 : (p2 == std::string::npos ? p1 : (p1 > p2 ? p1 : p2));
+							f = (p != std::string::npos && p > 150) ? f.substr(0, p + 1) : f.substr(0, f.rfind(' ', 300));
+						}
+						shaped += "C: " + f + "\n";
+					}
+					shaped += "Q: " + question + "\nA:";
 				}
-				std::string const out = brain.answer(question);
+				std::string const out = brain.answer(brain.prompt_fmt.empty() ? question : shaped);
 				printf("Shiro Brain: answer (%u bytes): [%s]\n", (unsigned)out.size(), log_safe(out).c_str());
 
 				write_file("/brain/response", seq + "\n" + sanitize(out));
