@@ -28,3 +28,6 @@ artifacts/
 # Python bytecode
 __pycache__/
 *.pyc
+
+# Local release builds (tools/build-hermos-v9-beta.sh)
+release/
