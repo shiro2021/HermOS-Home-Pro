@@ -99,7 +99,22 @@ TEMPL_Q = ["What is the state of {f}?", "Does HermOS have this: {f}?", "Tell me 
 def ans(f, st, note):
     return f"{f}: {st}." + (f" {note}" if note else "")
 
+# component proposals: the file-block format, with a minimal valid skeleton (what the Forge accepts)
+def skeleton(n):
+    return (f'<file path="src/app/{n}/main.cc">\n#include <base/component.h>\nvoid Component::construct(Genode::Env &) {{ }}\n</file>\n'
+            f'<file path="src/app/{n}/target.mk">\nTARGET = {n}\nLIBS = base\nSRC_CC = main.cc\n</file>\n'
+            f'<file path="src/app/{n}/manifest.hid">\n+ manifest\n name: {n}\n kind: rea\n + caps\n  vfs: /apps/{n},ro\n  nic: none\n  block: none\n  gui: cell\n + quotas\n  ram: 16M\n  cpu: 25\n</file>')
+NAMES = ["clockcell", "notepad", "calcer", "weatherbox", "mediaview", "taskboard", "hexdump", "logview", "paintcell", "timer", "notes", "sysinfo",
+         "diskmap", "netwatch", "colorpick", "unitconv"]
+CREATE_Q = ["Create a component named {n}.", "Make a new component called {n}.", "Write the component {n}.", "I need a component {n}, build it."]
+COMP = []
+for n in NAMES:
+    for t in random.sample(CREATE_Q, 3):
+        COMP.append((t.format(n=n), skeleton(n)))
+
 samples = []
+for q, a in COMP:
+    samples.append((q, a))
 for q, a in FACTS:
     samples.append((q, a))
     samples.append((q.rstrip("?") + ", please?", a))

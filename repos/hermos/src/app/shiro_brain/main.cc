@@ -65,7 +65,7 @@ namespace {
 		return out;
 	}
 
-	enum { N_CTX = 2048, N_PREDICT = 384, N_THREADS = 2 };
+	enum { N_CTX = 2048, N_PREDICT = 640, N_THREADS = 2 };
 
 	void set_tokens(llama_batch_ext *batch, llama_token const *tokens, int32_t n, llama_pos pos0)
 	{

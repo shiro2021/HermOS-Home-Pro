@@ -52,7 +52,7 @@ stream = np.array(stream, dtype=np.int32)
 print("samples", len(samples), "tokens", len(stream), "vocab", V, flush=True)
 
 # ---- model
-D, L, H, F, T = 192, 4, 4, 512, 160
+D, L, H, F, T = 192, 4, 4, 512, 576
 HD = D // H
 rng = np.random.default_rng(3)
 
@@ -124,7 +124,7 @@ def step(p, m, v2, ids, lr, t):
     p = jax.tree_util.tree_map(upd, p, m, v2)
     return p, m, v2, l
 
-BATCH = 24
+BATCH = 8
 t0 = time.time()
 for i in range(1, steps + 1):
     starts = rng.integers(0, len(stream) - T - 1, BATCH)
