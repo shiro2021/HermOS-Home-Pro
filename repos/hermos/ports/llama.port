@@ -1,0 +1,7 @@
+LICENSE   := MIT
+VERSION   := a866b4a
+DOWNLOADS := llama.git
+
+URL(llama) := https://github.com/ggml-org/llama.cpp.git
+REV(llama) := a866b4ade63921826c530307a368fbca3a334a0b
+DIR(llama) := src/lib/llama
