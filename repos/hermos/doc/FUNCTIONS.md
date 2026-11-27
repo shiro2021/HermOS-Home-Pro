@@ -54,7 +54,8 @@ function carries one of these marks:
 | Clock (taskbar) | VERIFIED | Live from the RTC. |
 | Left launcher dock: Files, Terminal, Install | VERIFIED | Auto-hides; hover the left edge. Install only on installable media. |
 | Hide/show panels: hover, `Meta+L`, `Meta+B`, grip tabs, taskbar button | VERIFIED | Animated by elapsed time. |
-| Agents & Workers pane: running apps with a close button, ▶ to launch | VERIFIED | Lists real apps only; "Active (n)" / "Inactive (n)". Hides and reveals by user click: the pane's X, the rail's Agents tile, or `Meta+A`; a slim full-height bar stays on the edge while it is hidden (click it to reveal; width `panels > right > slim`) with the rail docked beside it; Cells may use the freed width. Mode and width are `panels > right` in `theme.hid`. The mock-up's per-card ⋯ menu and sample thumbnails are not drawn (nothing real behind them). |
+| Hide/show all Cells: `Meta+D` | BUILT | V9.01, not yet boot-tested. With any Cell open it hides all open Cells and remembers them; pressed with none open it shows them again (only Cells that still have something to show). Apps keep running while hidden, as with minimise. |
+| Agents & Workers pane: running apps with a close button, ▶ to launch | VERIFIED | Lists real apps only; "Active (n)" / "Inactive (n)". Hides and reveals by user click: the pane's X, the rail's Agents tile, or `Meta+A`; a slim full-height bar stays on the edge while it is hidden (click it to reveal; width `panels > right > slim`) with the rail docked beside it; Cells may use the freed width. **V9.01 (BUILT, not yet boot-tested): the rail now leaves the screen with the pane; only the slim bar stays, and the work area grows by the rail width too.** Mode and width are `panels > right` in `theme.hid`. The mock-up's per-card ⋯ menu and sample thumbnails are not drawn (nothing real behind them). |
 | "Hermes Agent: Ready" status | BUILT | Always shows Ready; the agent's real state is not queried. |
 | Windows: frame, close, minimise, restore from the taskbar | VERIFIED | |
 | Window maximise (uses the Plasma-style client area) | BUILT | |
@@ -70,9 +71,9 @@ function carries one of these marks:
 | Theme (`theme.hid` → `theme_state`, 1/10000 geometry, panel modes, Cell frame look) | VERIFIED | The `+ frame` section (border width, glow, shadow, active/carbon colours) was changed in the file and the Cells followed. |
 | System window: version, kernel, CPUs, graphics, storage, uptime, memory | VERIFIED | All measured; memory is the desktop's own heap usage. |
 | System window side list (Hardware, Storage, Network, …) | VISUAL | Not clickable. |
-| Navigation rail (Agents, System, Files, Network, Devices, Settings) | VISUAL | Tiles do nothing yet. |
+| Navigation rail (Agents, System, Files, Network, Devices, Settings) | BUILT | V9.01, not yet boot-tested: Agents hides/reveals the pane; System shows the System Cell (not if an app holds that slot); Files brings a running Files app forward or starts one. Network, Devices and Settings have no component yet: drawn dimmed and not clickable. |
 | Welcome window | VERIFIED | Opens the installer on installable media; tips otherwise. |
-| Mock-up preview windows (Files list, Hydroponics, Create Worker, Updates) | VISUAL | They show invented content. Off by default (`preview="yes"` turns them on). |
+| Mock-up preview windows (Files list, Hydroponics, Create Worker, Updates) | VISUAL | They show invented content. Off by default since V9.01: the run script passes `preview: yes` only with `--hermos-preview yes` (or `--hermos-browser-dir`, whose browser lives in Cell 2). Before V9.01 every image had them on. |
 | Settings, notifications, workspaces, lock screen, login, user accounts | ABSENT | |
 
 ## 4. Applications

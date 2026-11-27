@@ -1838,8 +1838,9 @@ namespace Hermos {
 		{
 			float const k    = float(_w) / Scene::DW;
 			float const slim = _sstate.right_slim * k;                      /* the slim bar stays */
-			float const rail = _sstate.right_rail * k;                      /* so does the rail beside it */
-			return int(float(_sb_w) * _sstate.right.t + slim * (1.0f - _sstate.right.t) + rail);
+			float const rail = _sstate.right_rail * k;                      /* the rail leaves with the pane */
+			float const t    = _sstate.right.t;
+			return int(float(_sb_w) * t + slim * (1.0f - t) + rail * t);
 		}
 
 		/* Step 3: the normalized snap slots from the theme_state report */
@@ -3162,6 +3163,53 @@ namespace Hermos {
 
 		/* ---- floating window manager: z-order, hit-test, drag/resize ---- */
 
+		/* a Cell slot that can be shown again: Welcome and System always, a slot with a running
+		 * app, or a mock-up Cell when the preview is on (same rule as the taskbar restore) */
+		bool _restorable(int i)
+		{
+			return i < 2 || _preview || _app_kind[i] != APP_NONE || _gui_root.cells().at(i);
+		}
+
+		/* Meta+D: with any Cell open, hide all open Cells and remember them; with none open,
+		 * show the remembered Cells again (only those that still have something to show) */
+		bool _desk_saved[NUM_CELLS] { };
+
+		void _toggle_show_desktop()
+		{
+			bool any_open = false;
+			for (int i = 0; i < NUM_CELLS; ++i) if (_win_open[i]) any_open = true;
+
+			if (any_open) {
+				for (int i = 0; i < NUM_CELLS; ++i) { _desk_saved[i] = _win_open[i]; _win_open[i] = false; }
+				log("HermOS: all Cells hidden (Meta+D)");
+				return;
+			}
+			for (int i = 0; i < NUM_CELLS; ++i) {
+				if (_desk_saved[i] && _restorable(i)) _win_open[i] = true;
+				_desk_saved[i] = false;
+			}
+			log("HermOS: Cells shown again (Meta+D)");
+		}
+
+		/* rail tile "System": show the System Cell (slot 1) unless an app took that slot */
+		void _show_system_cell()
+		{
+			if (_app_kind[1] != APP_NONE || _gui_root.cells().at(1)) {
+				log("HermOS: System Cell slot is held by an app; not shown");
+				return;
+			}
+			_win_open[1] = true;
+			_bring_to_front(1);
+		}
+
+		/* rail tile "Files": bring a running Files app forward, or start one */
+		void _show_files()
+		{
+			for (int i = 0; i < MAX_APPS; ++i)
+				if (_app_kind[i] == APP_FILES) { _win_open[i] = true; _bring_to_front(i); return; }
+			_launch_app(APP_FILES);
+		}
+
 		void _bring_to_front(int cell)
 		{
 			int pos = -1;
@@ -3532,7 +3580,7 @@ namespace Hermos {
 		void _sync_sysinfo()
 		{
 			Scene::SysInfo &si = _sstate.sys;
-			_cpy(si.version, sizeof si.version, "HermOS V8 (Genode 26.08)");
+			_cpy(si.version, sizeof si.version, "HermOS V9.01 Beta (Genode 26.08)");
 
 			unsigned long const ms = _timer.elapsed_ms();
 			unsigned const mins = (unsigned)(ms / 60000), secs = (unsigned)(ms / 1000);
@@ -3694,6 +3742,9 @@ namespace Hermos {
 			if (m.hit(_shits.pane_reveal, x, y)) { _sstate.right.toggle(); _dirty = true; return true; }
 			if (m.hit(_shits.pane_close, x, y) && _sstate.right.visible()) { _sstate.right.toggle(); _dirty = true; return true; }
 			if (m.hit(_shits.rail[0], x, y)) { _sstate.right.toggle(); _dirty = true; return true; }
+			/* the other live rail tiles; Network, Devices and Settings have no component yet */
+			if (m.hit(_shits.rail[1], x, y)) { _show_system_cell(); _dirty = true; return true; }
+			if (m.hit(_shits.rail[2], x, y)) { _show_files();       _dirty = true; return true; }
 
 			/* sidebar: start an app, or stop a running one */
 			for (int i = 0; i < _sstate.app_count; ++i) {
@@ -4179,6 +4230,7 @@ namespace Hermos {
 						case Input::KEY_B:        _sstate.bottom.toggle(); _dirty = true; return;
 						case Input::KEY_A:        _sstate.right.toggle();  _dirty = true; return;   /* Agents & Workers */
 						case Input::KEY_K:        _kill_focused();         return;                  /* Kill Mode */
+						case Input::KEY_D:        _toggle_show_desktop();  _dirty = true; return;   /* hide/show all Cells */
 						case Input::KEY_T:        _toggle_tile();  return;
 						case Input::KEY_LEFT:     _quick_tile(0);  return;
 						case Input::KEY_RIGHT:    _quick_tile(1);  return;

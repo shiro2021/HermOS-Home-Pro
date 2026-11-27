@@ -295,8 +295,12 @@ set browser_dir [cmd_arg --hermos-browser-dir ""]
 set browser_child ""
 set browser_nic ""
 set browser_report ""
-set desktop_preview " | preview: yes"
+# The mock-up Cells (Files list, Hydroponics, Create Worker, Updates) show invented content.
+# They are off unless the build asks for them with --hermos-preview yes.
+set desktop_preview ""
+if {[cmd_arg --hermos-preview no] eq "yes"} { set desktop_preview " | preview: yes" }
 if {$browser_dir ne ""} {
+	# the browser is hosted in Cell 2, which the desktop only opens at start with the preview on
 	set desktop_preview " | preview: yes"
 	set browser_nic "    + policy | label_prefix: app2 | domain: downlink"
 	set browser_report "    + policy | label: app2 -> shape | report: app2 -> shape"
